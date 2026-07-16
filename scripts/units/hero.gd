@@ -313,7 +313,7 @@ func _move(delta: float, direction: float) -> void:
 
 	if _on_escape:
 		if _progress >= _path_length:
-			_escape()
+			_reach_exit()
 		elif _progress <= 0.0 and state == State.RETURNING:
 			_deposit()
 	else:
@@ -350,7 +350,7 @@ func _loot(delta: float) -> void:
 	queue_redraw()
 
 
-func _escape() -> void:
+func _reach_exit() -> void:
 	state = State.ESCAPED
 	if carried_gold > 0:
 		EconomySystem.confirm_loss(carried_gold)
