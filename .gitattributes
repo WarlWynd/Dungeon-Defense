@@ -1,0 +1,30 @@
+# Normalize line endings: Git stores text as LF, checks out native on each OS.
+* text=auto
+
+# Godot text resources — always LF, treat as text for diffs/merges.
+*.gd    text eol=lf
+*.tscn  text eol=lf
+*.tres  text eol=lf
+*.godot text eol=lf
+*.cfg   text eol=lf
+*.import text eol=lf
+*.uid   text eol=lf
+*.md    text eol=lf
+*.json  text eol=lf
+
+# Binary assets — never touch, never diff as text.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.webp  binary
+*.svg   text eol=lf
+*.ico   binary
+*.ttf   binary
+*.otf   binary
+*.wav   binary
+*.ogg   binary
+*.mp3   binary
+*.exe   binary
+*.dll   binary
+*.zip   binary
