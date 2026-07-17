@@ -5,6 +5,9 @@ class_name Board
 ## under the World node so it inherits the fit-and-rotate transform.
 
 const STONE_PATH := "res://assets/textures/dungeon_stone.png"
+## Optional build-slot art. Drop a texture here and it replaces the placeholder
+## square below with no other code changes.
+const SLOT_TEX_PATH := "res://assets/textures/build_slot.png"
 const STONE_TINT := Color(0.42, 0.42, 0.46)
 const STONE_SCRIM := Color(0, 0, 0, 0.30)
 
@@ -15,11 +18,14 @@ var show_nodes: bool = false
 var hover: int = -1
 
 var _stone: Texture2D
+var _slot_tex: Texture2D
 
 
 func _ready() -> void:
 	if ResourceLoader.exists(STONE_PATH):
 		_stone = load(STONE_PATH) as Texture2D
+	if ResourceLoader.exists(SLOT_TEX_PATH):
+		_slot_tex = load(SLOT_TEX_PATH) as Texture2D
 
 
 func _draw() -> void:
@@ -115,6 +121,18 @@ func _draw_build_nodes() -> void:
 			continue
 		var pos: Vector2 = n["pos"]
 		var hovered := i == hover
-		var col := Color(0.9, 0.9, 0.5, 0.55) if hovered else Color(0.7, 0.7, 0.7, 0.28)
-		draw_circle(pos, 20.0, col)
-		draw_arc(pos, 20.0, 0.0, TAU, 20, Color(1, 1, 1, 0.5), 1.5)
+		## Slot the size of a trap's footprint (matches the crossbow, 28x28). Uses
+		## SLOT_TEX_PATH art if present, else the placeholder square.
+		var half := 14.0
+		if _slot_tex != null:
+			## Draw the slot art SCREEN-UPRIGHT (cancel the board's rotation) so it
+			## reads the same in portrait or landscape, like the trap sprites.
+			var tint := Color(1, 1, 1, 0.95) if hovered else Color(1, 1, 1, 0.55)
+			draw_set_transform(pos, -global_rotation, Vector2.ONE)
+			draw_texture_rect(_slot_tex, Rect2(Vector2(-half, -half), Vector2(half * 2.0, half * 2.0)), false, tint)
+			draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		else:
+			var rect := Rect2(pos - Vector2(half, half), Vector2(half * 2.0, half * 2.0))
+			var col := Color(0.9, 0.9, 0.5, 0.55) if hovered else Color(0.7, 0.7, 0.7, 0.28)
+			draw_rect(rect, col)
+			draw_rect(rect, Color(1, 1, 1, 0.5), false, 1.5)

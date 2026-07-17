@@ -29,6 +29,7 @@ var _hover_node: int = -1
 var _fast: bool = false
 
 const ROAD_HALF_WIDTH := 25.0
+const COMMAND_REACH := 45.0   ## click within this of the path to post; else deselect
 const NODE_OFFSET := 38.0
 const CANDIDATE_STEP := 34.0
 const PATH_END_MARGIN := 80.0
@@ -377,6 +378,26 @@ func _route_between(from: Vector2, to: Vector2) -> PackedVector2Array:
 	return PackedVector2Array([to])
 
 
+## Nearest point ON the path (maze tunnel or curve) to an arbitrary point, so a
+## commanded Anti-Hero's post lands on the path rather than in the stone.
+func _snap_to_path(p: Vector2) -> Vector2:
+	if _maze != null:
+		return _maze.nearest_path_point(p)
+	if _curve != null:
+		var pts := _curve.get_baked_points()
+		if pts.is_empty():
+			return p
+		var best: Vector2 = pts[0]
+		var best_d := INF
+		for bp in pts:
+			var d := bp.distance_squared_to(p)
+			if d < best_d:
+				best_d = d
+				best = bp
+		return best
+	return p
+
+
 func _curve_route(from: Vector2, to: Vector2) -> PackedVector2Array:
 	var pts := _curve.get_baked_points()
 	if pts.size() < 2:
@@ -587,8 +608,12 @@ func _tap(design_pos: Vector2) -> void:
 	## Otherwise, if an Anti-Hero is selected, order it to guard this spot.
 	var sel := _hud.inspected()
 	if sel != null and is_instance_valid(sel) and sel is Minion:
-		(sel as Minion).command_to(design_pos, Callable(self, "_route_between"))
-		_hud.say("%s holds this ground." % (sel as Minion).data.unit_display())
+		var post := _snap_to_path(design_pos)
+		if design_pos.distance_to(post) <= COMMAND_REACH:
+			(sel as Minion).command_to(post, Callable(self, "_route_between"))
+			_hud.say("%s holds this ground." % (sel as Minion).data.unit_display())
+		else:
+			_select(null)   ## clicked into the stone, off the path — just deselect
 		return
 	_select(null)
 

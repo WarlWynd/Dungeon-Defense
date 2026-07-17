@@ -137,13 +137,16 @@ func _draw() -> void:
 	var body := c.lightened(0.5) if flashing else c
 
 	if data.icon != null:
-		## Real art assigned — draw the sprite in place of the glyph.
+		## Real art assigned — draw the sprite SCREEN-UPRIGHT (cancel the board's
+		## portrait/landscape rotation) so it reads the same as the trap tray.
+		draw_set_transform(Vector2.ZERO, -global_rotation, Vector2.ONE)
 		var s := 34.0
 		draw_texture_rect(data.icon, Rect2(Vector2(-s * 0.5, -s * 0.5), Vector2(s, s)), false)
 		if flashing:
 			draw_texture_rect(data.icon, Rect2(Vector2(-s * 0.5, -s * 0.5), Vector2(s, s)), false, Color(1, 1, 1, 0.4))
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 		if data.kind == TrapData.Kind.TURRET and _muzzle != Vector2.ZERO:
-			draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.95, 0.9, 0.7), 3.0)
+			draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.0, 0.011765, 0.337255), 3.0)
 	else:
 		match data.kind:
 			TrapData.Kind.AREA_DAMAGE:
@@ -154,9 +157,9 @@ func _draw() -> void:
 			TrapData.Kind.TURRET:
 				draw_rect(Rect2(Vector2(-13, -13), Vector2(26, 26)), body)
 				if _muzzle != Vector2.ZERO:
-					draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.95, 0.9, 0.7), 3.0)
+					draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.0, 0.011765, 0.337255), 3.0)
 				if flashing and _muzzle != Vector2.ZERO:
-					draw_line(Vector2.ZERO, _muzzle, Color(1, 1, 0.8, 0.5), 1.0)
+					draw_line(Vector2.ZERO, _muzzle, Color(0.0, 0.011765, 0.337255, 0.6), 1.0)
 			TrapData.Kind.SLOW_AURA:
 				draw_circle(Vector2.ZERO, 13.0, body)
 				draw_arc(Vector2.ZERO, 13.0, 0.0, TAU, 20, Color(1, 1, 1, 0.8), 2.0)

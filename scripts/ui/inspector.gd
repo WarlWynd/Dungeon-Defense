@@ -212,6 +212,16 @@ func _minion_lines(m: Minion) -> Array:
 	return lines
 
 
+## Rounded background panel with a colored border, shared by every card.
+func _draw_rounded_panel(rect: Rect2, bg: Color, border: Color, border_w: float, radius: int) -> void:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(int(border_w))
+	sb.set_corner_radius_all(radius)
+	draw_style_box(sb, rect)
+
+
 ## The trap card. Its whole reason for existing is the priority button at the
 ## top — everything below it is context for that one decision.
 func _draw_trap_card(t: Trap) -> void:
@@ -223,8 +233,8 @@ func _draw_trap_card(t: Trap) -> void:
 	var top := 56.0 if is_turret else 8.0
 	var h := top + 96.0
 
-	draw_rect(Rect2(Vector2.ZERO, Vector2(W, h)), Color(0.06, 0.05, 0.04, 0.92))
-	draw_rect(Rect2(Vector2.ZERO, Vector2(W, h)), Color(d.color, 0.75), false, 2.0)
+	_draw_rounded_panel(Rect2(Vector2.ZERO, Vector2(W, h)),
+			Color(0.06, 0.05, 0.04, 0.92), Color(d.color, 0.75), 2.0, 10)
 
 	if is_turret:
 		_priority_btn.text = "Target: %s   (tap to change)" % Trap.targeting_name(
@@ -262,8 +272,8 @@ func _draw_card(lines: Array, title: String, col: Color, hp: float,
 	var f := ThemeDB.fallback_font
 	var h := PAD * 2.0 + 62.0 + float(lines.size()) * 19.0
 
-	draw_rect(Rect2(Vector2.ZERO, Vector2(W, h)), Color(0.06, 0.05, 0.04, 0.92))
-	draw_rect(Rect2(Vector2.ZERO, Vector2(W, h)), Color(col, 0.7), false, 2.0)
+	_draw_rounded_panel(Rect2(Vector2.ZERO, Vector2(W, h)),
+			Color(0.06, 0.05, 0.04, 0.92), Color(col, 0.7), 2.0, 10)
 
 	draw_circle(Vector2(PAD + 9.0, PAD + 10.0), 8.0, col)
 	draw_string(f, Vector2(PAD + 24.0, PAD + 16.0), title,

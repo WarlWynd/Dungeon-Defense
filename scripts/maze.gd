@@ -188,6 +188,14 @@ func route_points(from: Vector2, to: Vector2) -> PackedVector2Array:
 	return out
 
 
+## The closest point that lies ON the tunnels — used to keep a commanded unit's
+## post on the path instead of out in the stone.
+func nearest_path_point(p: Vector2) -> Vector2:
+	if edges.is_empty():
+		return p
+	return _nearest_edge(p)["q"]
+
+
 func _nearest_edge(p: Vector2) -> Dictionary:
 	var best := {"a": 0, "b": 0, "q": p}
 	var best_d := INF

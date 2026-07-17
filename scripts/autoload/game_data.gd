@@ -85,8 +85,10 @@ func entrance_pos() -> Vector2:
 	var b := board()
 	if is_maze():
 		return b["junctions"][b["entrance"]]
-	var pts: Array = b["points"]
-	return pts[1] if pts.size() > 1 else pts[0]
+	## The very first path point — the true start of the path (enemies spawn here
+	## and walk in). It may sit just above the stone on boards that enter from off
+	## the top edge; that's where the path itself begins.
+	return b["points"][0]
 
 
 func next_board() -> void:
@@ -193,10 +195,14 @@ func _trap(id: String, tname: String, kind: TrapData.Kind, cost: int, dmg: float
 
 
 func _build_traps() -> void:
-	_trap("spike_pit", "Spike Pit", TrapData.Kind.AREA_DAMAGE, 60, 7.0, "physical",
+	var spike := _trap("spike_pit", "Spike Pit", TrapData.Kind.AREA_DAMAGE, 60, 7.0, "physical",
 		46.0, 0.45, Color(0.62, 0.62, 0.68), "Simple. Honest. Pointy.")
-	_trap("crossbow", "Crossbow Turret", TrapData.Kind.TURRET, 110, 13.0, "physical",
+	if ResourceLoader.exists("res://assets/textures/SpikePitTrap.png"):
+		spike.icon = load("res://assets/textures/SpikePitTrap.png")
+	var crossbow := _trap("crossbow", "Crossbow Turret", TrapData.Kind.TURRET, 110, 13.0, "physical",
 		160.0, 0.55, Color(0.55, 0.35, 0.22), "Points at whoever is nearest.")
+	if ResourceLoader.exists("res://assets/textures/CrossBowTrap.png"):
+		crossbow.icon = load("res://assets/textures/CrossBowTrap.png")
 	var frost := _trap("frost_totem", "Frost Totem", TrapData.Kind.SLOW_AURA, 85, 0.0, "physical",
 		130.0, 1.0, Color(0.45, 0.78, 0.95), "Does no damage. Wins the level.")
 	frost.slow_amount = 0.45

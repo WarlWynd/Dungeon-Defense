@@ -25,6 +25,8 @@ var _msg_label: Label
 var _tray: HBoxContainer
 var _unleash_btn: Button
 var _pause_btn: Button
+var _pause_icon: Control
+var _paused_state: bool = false
 var _speed_btn: Button
 
 var _bestiary: Bestiary
@@ -69,26 +71,41 @@ func _build() -> void:
 
 	var controls := HBoxContainer.new()
 	controls.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	controls.offset_left = -420
+	controls.offset_left = -530
 	controls.offset_right = -16
 	controls.offset_top = 12
 	controls.offset_bottom = 56
+	controls.alignment = BoxContainer.ALIGNMENT_END   ## keep the row flush to the right edge
 	controls.add_theme_constant_override("separation", 8)
 	_root.add_child(controls)
 
+	_unleash_btn = Button.new()
+	_unleash_btn.custom_minimum_size = Vector2(110, 44)
+	_unleash_btn.text = "UNLEASH"
+	_unleash_btn.pressed.connect(func(): unleash_pressed.emit())
+	controls.add_child(_unleash_btn)
+
 	var shop_btn := Button.new()
-	shop_btn.custom_minimum_size = Vector2(64, 44)
-	shop_btn.text = "SHOP"
+	shop_btn.custom_minimum_size = Vector2(44, 44)
 	shop_btn.tooltip_text = "Store"
 	shop_btn.pressed.connect(_toggle_store)
 	controls.add_child(shop_btn)
+	var shop_icon := Control.new()
+	shop_icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	shop_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	shop_icon.draw.connect(_draw_present_icon.bind(shop_icon))
+	shop_btn.add_child(shop_icon)
 
 	var gear_btn := Button.new()
 	gear_btn.custom_minimum_size = Vector2(44, 44)
-	gear_btn.text = "SET"
 	gear_btn.tooltip_text = "Settings"
 	gear_btn.pressed.connect(_toggle_settings)
 	controls.add_child(gear_btn)
+	var gear_icon := Control.new()
+	gear_icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	gear_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	gear_icon.draw.connect(_draw_gear_icon.bind(gear_icon))
+	gear_btn.add_child(gear_icon)
 
 	var board_btn := Button.new()
 	board_btn.custom_minimum_size = Vector2(44, 44)
@@ -111,15 +128,20 @@ func _build() -> void:
 	controls.add_child(_speed_btn)
 
 	_pause_btn = Button.new()
-	_pause_btn.custom_minimum_size = Vector2(100, 44)
-	_pause_btn.text = "PAUSE"
+	_pause_btn.custom_minimum_size = Vector2(48, 44)
+	_pause_btn.tooltip_text = "Pause / Resume"
 	_pause_btn.pressed.connect(func(): pause_pressed.emit())
 	controls.add_child(_pause_btn)
+	_pause_icon = Control.new()
+	_pause_icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pause_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_icon.draw.connect(_draw_pause_icon.bind(_pause_icon))
+	_pause_btn.add_child(_pause_icon)
 
 	_hoard_bar = Control.new()
 	_hoard_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_hoard_bar.offset_left = 12
-	_hoard_bar.offset_right = -490   ## leave the bottom-right for the trap tray
+	_hoard_bar.offset_right = -380   ## leave the bottom-right for the trap tray
 	_hoard_bar.offset_top = -68
 	_hoard_bar.offset_bottom = -12
 	_hoard_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -211,13 +233,6 @@ func _build() -> void:
 		col.add_child(cost)
 
 		_tray.add_child(b)
-
-	_unleash_btn = Button.new()
-	_unleash_btn.custom_minimum_size = Vector2(104, 58)
-	_unleash_btn.add_theme_font_size_override("font_size", 13)
-	_unleash_btn.text = "UNLEASH"
-	_unleash_btn.pressed.connect(func(): unleash_pressed.emit())
-	row.add_child(_unleash_btn)
 
 
 ## Left-side list of the Anti-Heroes currently drawn to your hoard. Click a row
@@ -595,8 +610,60 @@ func say(text: String) -> void:
 
 
 func set_controls(paused: bool, fast: bool) -> void:
-	_pause_btn.text = "RESUME" if paused else "PAUSE"
+	_paused_state = paused
+	if _pause_icon != null:
+		_pause_icon.queue_redraw()
 	_speed_btn.text = "2x" if fast else "1x"
+
+
+## Store glyph: a wrapped present — box, lid, ribbon, and a bow on top.
+func _draw_present_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var box := Color(0.92, 0.92, 0.92)
+	var ribbon := Color(0.98, 0.78, 0.32)
+	var bx := ctr.x
+	var top := ctr.y - 1.0
+	icon.draw_rect(Rect2(Vector2(bx - 8.0, top), Vector2(16.0, 10.0)), box)              # body
+	icon.draw_rect(Rect2(Vector2(bx - 9.0, top - 3.5), Vector2(18.0, 3.5)), box)         # lid
+	icon.draw_rect(Rect2(Vector2(bx - 1.5, top - 3.5), Vector2(3.0, 13.5)), ribbon)      # ribbon
+	var by := top - 3.5
+	icon.draw_colored_polygon(PackedVector2Array([
+		Vector2(bx, by), Vector2(bx - 7.0, by - 6.0), Vector2(bx - 1.0, by - 0.5)
+	]), ribbon)
+	icon.draw_colored_polygon(PackedVector2Array([
+		Vector2(bx, by), Vector2(bx + 7.0, by - 6.0), Vector2(bx + 1.0, by - 0.5)
+	]), ribbon)
+
+
+## Settings glyph: a simple gear — radial teeth, a ring body, and a center axle.
+func _draw_gear_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var col := Color(0.92, 0.92, 0.92)
+	var teeth := 8
+	var r_in := 5.5
+	var r_out := 9.5
+	for i in teeth:
+		var ang := TAU * float(i) / float(teeth)
+		var dir := Vector2(cos(ang), sin(ang))
+		icon.draw_line(ctr + dir * (r_in - 1.0), ctr + dir * r_out, col, 3.5)
+	icon.draw_arc(ctr, r_in, 0.0, TAU, 32, col, 3.0)
+	icon.draw_circle(ctr, 2.0, col)
+
+
+## Pause/resume glyph: two bars while running, a play triangle while paused.
+func _draw_pause_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var col := Color(0.92, 0.92, 0.92)
+	if _paused_state:
+		var s := 8.0
+		icon.draw_colored_polygon(PackedVector2Array([
+			ctr + Vector2(-s, -s),
+			ctr + Vector2(-s, s),
+			ctr + Vector2(s + 3.0, 0.0),
+		]), col)
+	else:
+		icon.draw_rect(Rect2(ctr + Vector2(-7.0, -8.0), Vector2(4.0, 16.0)), col)
+		icon.draw_rect(Rect2(ctr + Vector2(3.0, -8.0), Vector2(4.0, 16.0)), col)
 
 
 func set_message(text: String) -> void:
