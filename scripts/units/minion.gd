@@ -15,11 +15,25 @@ var _home: Vector2
 var _attack_cd: float = 0.0
 var _charm_cd: float = 0.0
 var _target: Hero = null
+var _had_target: bool = false
+
+## Corridor route to the commanded post, so the unit walks the tunnels instead of
+## cutting through the stone. Supplied by a router Callable (main builds it from
+## the board's maze graph or path curve).
+var _router: Callable = Callable()
+var _route: PackedVector2Array = PackedVector2Array()
+var _route_i: int = 0
 
 var restless: bool = false   ## telegraphed "about to leave" during build window
 var selected: bool = false
 
+## Player order: when you click this Anti-Hero and then click a spot, it GUARDS
+## that spot — only engaging heroes that come within GUARD_RADIUS of the post
+## and returning there afterwards. Persists across waves while the unit lives.
+var commanded: bool = false
+
 const LEASH := 260.0
+const GUARD_RADIUS := 160.0
 
 
 func setup(minion_data: MinionData, home: Vector2) -> void:
@@ -31,6 +45,42 @@ func setup(minion_data: MinionData, home: Vector2) -> void:
 
 func is_alive() -> bool:
 	return hp > 0.0
+
+
+## Player order: guard this spot (design-space point), clamped to the board.
+## `router` builds a corridor path from here to the post and is stored so the
+## unit can re-route back to its post after chasing a thief.
+func command_to(pos: Vector2, router: Callable = Callable()) -> void:
+	_home = Vector2(clampf(pos.x, 20.0, 700.0), clampf(pos.y, 20.0, 1260.0))
+	commanded = true
+	if router.is_valid():
+		_router = router
+	_set_route_to(_home)
+	queue_redraw()
+
+
+func _set_route_to(target: Vector2) -> void:
+	if _router.is_valid():
+		_route = _router.call(position, target)
+	else:
+		_route = PackedVector2Array()
+	_route_i = 0
+
+
+## Walk the corridor waypoints to the post, then step onto the exact spot.
+func _follow_route(delta: float) -> void:
+	var spd := data.speed
+	while _route_i < _route.size():
+		var wp: Vector2 = _route[_route_i]
+		var to_wp := wp - position
+		if to_wp.length() <= 6.0:
+			_route_i += 1
+			continue
+		position += to_wp.normalized() * spd * delta
+		return
+	var to_home := _home - position
+	if to_home.length() > 3.0:
+		position += to_home.normalized() * spd * delta
 
 
 func take_damage(amount: float, _damage_type: String = "physical") -> void:
@@ -53,10 +103,18 @@ func _physics_process(delta: float) -> void:
 			_charm_cd = data.charm_cooldown
 
 	if _target == null:
-		_return_home(delta)
+		## Just finished a chase — recompute the corridor route back to the post.
+		if commanded and _had_target:
+			_set_route_to(_home)
+		_had_target = false
+		if commanded and not _route.is_empty():
+			_follow_route(delta)
+		else:
+			_return_home(delta)
 		queue_redraw()
 		return
 
+	_had_target = true
 	var to_target := _target.position - position
 	var dist := to_target.length()
 	if dist > data.attack_range:
@@ -72,13 +130,17 @@ func _physics_process(delta: float) -> void:
 func _pick_target(heroes: Array) -> Hero:
 	var best: Hero = null
 	var best_score := -INF
+	## A commanded Anti-Hero measures its reach from its guarded POST (so it
+	## holds the line); a free one measures from itself (so it can chase).
+	var center := _home if commanded else position
+	var reach := GUARD_RADIUS if commanded else LEASH
 	for h in heroes:
 		var hero := h as Hero
 		if hero == null or not hero.is_alive():
 			continue
 		if hero.is_charmed():
 			continue
-		if position.distance_to(hero.position) > LEASH:
+		if center.distance_to(hero.position) > reach:
 			continue
 		var score := -position.distance_to(hero.position)
 		if data.pursue_thieves_first and hero.is_carrying():
@@ -116,7 +178,9 @@ func _try_charm(heroes: Array) -> bool:
 func _return_home(delta: float) -> void:
 	var to_home := _home - position
 	if to_home.length() > 4.0:
-		position += to_home.normalized() * data.speed * 0.6 * delta
+		## Move at full speed to a player-ordered post; saunter back otherwise.
+		var spd := data.speed * (1.0 if commanded else 0.6)
+		position += to_home.normalized() * spd * delta
 
 
 func _draw() -> void:
@@ -132,6 +196,12 @@ func _draw() -> void:
 
 	if selected:
 		draw_arc(Vector2.ZERO, r + 11.0, 0.0, TAU, 28, Color(1, 1, 1, 0.95), 2.5)
+
+	## Show the guarded post and a tether to it while this unit is selected.
+	if commanded and selected:
+		var lp := _home - position
+		draw_line(Vector2.ZERO, lp, Color(1.0, 0.9, 0.4, 0.5), 1.5)
+		draw_arc(lp, 12.0, 0.0, TAU, 24, Color(1.0, 0.9, 0.4, 0.8), 2.0)
 
 	## Screen-aligned overlays (cancel world rotation).
 	draw_set_transform(Vector2.ZERO, -global_rotation, Vector2.ONE)

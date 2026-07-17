@@ -155,3 +155,64 @@ func _shortest_path(from: int, to: int) -> Array:
 		path.push_front(c)
 		c = came_from[c]
 	return path
+
+
+## A corridor route (world points) from `from` to `to` that stays on the tunnels
+## instead of cutting through the stone. Hops onto the nearest corridor, walks the
+## graph to the corridor nearest the destination, then steps off to the target.
+func route_points(from: Vector2, to: Vector2) -> PackedVector2Array:
+	if junctions.is_empty() or edges.is_empty():
+		return PackedVector2Array([to])
+	var ef := _nearest_edge(from)
+	var et := _nearest_edge(to)
+	## On the same tunnel already — just slide along it.
+	if ef["a"] == et["a"] and ef["b"] == et["b"]:
+		return PackedVector2Array([ef["q"], et["q"], to])
+	var best_path: Array = []
+	var best_len := INF
+	for sa in [int(ef["a"]), int(ef["b"])]:
+		for sb in [int(et["a"]), int(et["b"])]:
+			var p := _shortest_path(sa, sb)
+			var l: float = _path_length(p) \
+					+ junctions[sa].distance_to(ef["q"]) \
+					+ junctions[sb].distance_to(et["q"])
+			if l < best_len:
+				best_len = l
+				best_path = p
+	var out := PackedVector2Array()
+	out.append(ef["q"])
+	for i in best_path:
+		out.append(junctions[i])
+	out.append(et["q"])
+	out.append(to)
+	return out
+
+
+func _nearest_edge(p: Vector2) -> Dictionary:
+	var best := {"a": 0, "b": 0, "q": p}
+	var best_d := INF
+	for e in edges:
+		var a: int = e[0]
+		var b: int = e[1]
+		var q := _closest_on_segment(p, junctions[a], junctions[b])
+		var d := p.distance_to(q)
+		if d < best_d:
+			best_d = d
+			best = {"a": a, "b": b, "q": q}
+	return best
+
+
+func _closest_on_segment(p: Vector2, a: Vector2, b: Vector2) -> Vector2:
+	var ab := b - a
+	var d2 := ab.length_squared()
+	if d2 <= 0.0:
+		return a
+	var t := clampf((p - a).dot(ab) / d2, 0.0, 1.0)
+	return a + ab * t
+
+
+func _path_length(idx_path: Array) -> float:
+	var l := 0.0
+	for i in range(1, idx_path.size()):
+		l += junctions[idx_path[i - 1]].distance_to(junctions[idx_path[i]])
+	return l

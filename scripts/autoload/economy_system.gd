@@ -60,6 +60,14 @@ func recover(amount: int) -> void:
 	EventBus.hoard_changed.emit(hoard)
 
 
+## Store purchase: Gems bought a Gold refill. Adds straight to the hoard.
+func add_gold(amount: int) -> void:
+	if amount <= 0:
+		return
+	hoard += amount
+	EventBus.hoard_changed.emit(hoard)
+
+
 ## Looted from a corpse — the only thing that grows the pile (can exceed start).
 func plunder(amount: int) -> void:
 	if amount <= 0:

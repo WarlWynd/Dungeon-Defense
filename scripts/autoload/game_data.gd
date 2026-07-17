@@ -219,12 +219,12 @@ func _build_minions() -> void:
 	goblins.attack_rate = 0.7
 	goblins.attack_range = 26.0
 	goblins.count = 3
-	goblins.allure_arrive = 0.50
-	goblins.allure_desert = 0.40
 	goblins.pursue_thieves_first = true
+	goblins.acquire_mode = "earn"       ## EARNED by surviving your first wave
+	goblins.unlock_wave = 1
 	goblins.color = Color(0.45, 0.72, 0.35)
 	goblins.radius = 10.0
-	goblins.description = "Three separate goblins, 40 HP each. They chase whoever carries your gold. A Knight cuts one down in 3s. The only minion that never abandons you."
+	goblins.description = "Three separate goblins, 40 HP each. They chase whoever carries your gold. A Knight cuts one down in 3s. Earned by clearing wave 1 — loyal for good once earned."
 	minions["goblin_pack"] = goblins
 
 	var succubus := MinionData.new()
@@ -240,6 +240,7 @@ func _build_minions() -> void:
 	succubus.allure_arrive = 0.75
 	succubus.allure_desert = 0.65
 	succubus.pursue_thieves_first = true
+	succubus.acquire_mode = "auto"      ## the ONLY automatic one — drawn by a rich hoard
 	succubus.can_charm = true
 	succubus.charm_range = 170.0
 	succubus.charm_cooldown = 6.0
@@ -249,6 +250,27 @@ func _build_minions() -> void:
 	succubus.radius = 11.0
 	succubus.description = "Drawn only by a rich hoard. She CHARMS a thief into carrying your gold back for you. Beaten only by purity. Fragile. Protect her."
 	minions["succubus"] = succubus
+
+	## BOUGHT with souls (or gems). A vengeful shade — fast, hard-hitting, and it
+	## hunts whoever holds your gold. Unlock is permanent once recruited.
+	var wraith := MinionData.new()
+	wraith.id = "wraith"
+	wraith.display_name = "Wraith"
+	wraith.unit_name = "Wraith"
+	wraith.max_hp = 90.0
+	wraith.speed = 120.0
+	wraith.damage = 16.0
+	wraith.attack_rate = 0.9
+	wraith.attack_range = 28.0
+	wraith.count = 1
+	wraith.pursue_thieves_first = true
+	wraith.acquire_mode = "buy"
+	wraith.recruit_souls = 25
+	wraith.recruit_gems = 30
+	wraith.color = Color(0.55, 0.35, 0.75)
+	wraith.radius = 12.0
+	wraith.description = "A vengeful shade bought with souls. Hits hard, moves fast, and hunts whoever carries your gold. Yours for good once recruited."
+	minions["wraith"] = wraith
 
 
 func wave_count() -> int:

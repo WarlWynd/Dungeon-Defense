@@ -34,6 +34,16 @@ const CANDIDATE_STEP := 34.0
 const PATH_END_MARGIN := 80.0
 const MINION_POST_OFFSETS := [400.0, 300.0, 205.0, 115.0, 65.0, 35.0]
 
+## Screen-space bands kept clear of the dungeon so the HUD never draws over the
+## pathing. TOP covers the hoard bar + wave/minion/toast text; BOTTOM covers the
+## trap tray + UNLEASH (bottom-right); LEFT covers the Anti-Heroes roster panel
+## and the inspector panel (both bottom-left); RIGHT is now clear. Tune these if
+## the HUD layout in hud.gd changes.
+const HUD_TOP_RESERVE := 300.0
+const HUD_BOTTOM_RESERVE := 120.0
+const HUD_RIGHT_RESERVE := 0.0
+const HUD_LEFT_RESERVE := 290.0
+
 
 func _ready() -> void:
 	## Main is ALWAYS (so pause works); simulation nodes are PAUSABLE.
@@ -47,11 +57,17 @@ func _ready() -> void:
 	_hud.trap_selected.connect(func(id: String): _selected_trap = id)
 	_hud.switch_board_pressed.connect(_on_switch_board)
 	_hud.trap_slots_changed.connect(_on_trap_slots_changed)
+	_hud.antihero_selected.connect(_on_antihero_selected)
+	_hud.store_recruit.connect(_on_store_recruit)
+	_hud.store_buy_gold.connect(_on_store_buy_gold)
+	_hud.store_buy_souls.connect(_on_store_buy_souls)
+	_hud.store_get_pack.connect(_on_store_get_pack)
+	_hud.store_watch_ad.connect(_on_store_watch_ad)
 
 	EventBus.hero_died.connect(_on_hero_died)
 	EventBus.hero_escaped.connect(_on_hero_escaped)
 	EventBus.hoard_empty.connect(_on_hoard_empty)
-	EventBus.hoard_changed.connect(func(_t: int): _hud.redraw_hoard())
+	EventBus.hoard_changed.connect(_on_hoard_changed)
 	EventBus.minion_arrived.connect(func(d: MinionData):
 			_hud.say("%s joins you. It smelled the gold." % d.display_name))
 	EventBus.minion_deserted.connect(func(d: MinionData):
@@ -149,16 +165,27 @@ func _fit_world() -> void:
 	if vp.x <= 0.0 or vp.y <= 0.0:
 		return
 
+	## Fit the dungeon into the clear region BELOW the top HUD band, ABOVE the
+	## bottom trap tray, and BETWEEN the left roster panel and right inspector,
+	## so the UI can never overlap the pathing. Reserves are clamped so a small
+	## window still leaves the board visible.
+	var top := minf(HUD_TOP_RESERVE, vp.y * 0.6)
+	var bottom := minf(HUD_BOTTOM_RESERVE, vp.y * 0.2)
+	var left := minf(HUD_LEFT_RESERVE, vp.x * 0.3)
+	var right := minf(HUD_RIGHT_RESERVE, vp.x * 0.3)
+	var avail_pos := Vector2(left, top)
+	var avail_size := Vector2(maxf(vp.x - left - right, 1.0), maxf(vp.y - top - bottom, 1.0))
+
 	if vp.x > vp.y:
 		var content := Vector2(DESIGN.y, DESIGN.x)
-		var s: float = minf(vp.x / content.x, vp.y / content.y)
-		var origin := (vp - content * s) * 0.5
+		var s: float = minf(avail_size.x / content.x, avail_size.y / content.y)
+		var origin := avail_pos + (avail_size - content * s) * 0.5
 		_world.rotation = -PI / 2.0
 		_world.scale = Vector2(s, s)
 		_world.position = Vector2(origin.x, origin.y + DESIGN.x * s)
 	else:
-		var s: float = minf(vp.x / DESIGN.x, vp.y / DESIGN.y)
-		var origin := (vp - DESIGN * s) * 0.5
+		var s: float = minf(avail_size.x / DESIGN.x, avail_size.y / DESIGN.y)
+		var origin := avail_pos + (avail_size - DESIGN * s) * 0.5
 		_world.rotation = 0.0
 		_world.scale = Vector2(s, s)
 		_world.position = origin
@@ -338,6 +365,51 @@ func _minion_posts() -> Array[Vector2]:
 	return posts
 
 
+## Corridor route between two design-space points, following the board geometry
+## (the maze tunnels, or the path curve) instead of a straight line — so a
+## commanded Anti-Hero walks to its post without cutting through the stone.
+func _route_between(from: Vector2, to: Vector2) -> PackedVector2Array:
+	if _maze != null:
+		return _maze.route_points(from, to)
+	if _curve != null:
+		return _curve_route(from, to)
+	return PackedVector2Array([to])
+
+
+func _curve_route(from: Vector2, to: Vector2) -> PackedVector2Array:
+	var pts := _curve.get_baked_points()
+	if pts.size() < 2:
+		return PackedVector2Array([to])
+	var i_from := _nearest_baked_index(pts, from)
+	var i_to := _nearest_baked_index(pts, to)
+	var out := PackedVector2Array()
+	var step := 6
+	if i_from <= i_to:
+		var i := i_from
+		while i < i_to:
+			out.append(pts[i])
+			i += step
+	else:
+		var i := i_from
+		while i > i_to:
+			out.append(pts[i])
+			i -= step
+	out.append(pts[i_to])
+	out.append(to)
+	return out
+
+
+func _nearest_baked_index(pts: PackedVector2Array, p: Vector2) -> int:
+	var best := 0
+	var best_d := INF
+	for i in pts.size():
+		var d := pts[i].distance_squared_to(p)
+		if d < best_d:
+			best_d = d
+			best = i
+	return best
+
+
 # --- Phase flow ------------------------------------------------------------
 
 func _start_build_phase() -> void:
@@ -349,6 +421,7 @@ func _start_build_phase() -> void:
 		return
 	phase = Phase.BUILD
 	build_timer = GameData.BUILD_SECONDS
+	_allure.advance_to_wave(wave_index)
 	_allure.update_restless_flags()
 	EventBus.build_phase_started.emit(build_timer)
 	_refresh()
@@ -387,6 +460,16 @@ func _process(_delta: float) -> void:
 	_board.queue_redraw()
 
 
+## Hoard changed — repaint the bar, and let a growing pile attract minions LIVE.
+## Arrivals are evaluated the instant gold moves (e.g. loot recovered mid-fight);
+## desertions still wait for the between-waves check in AllureSystem.
+func _on_hoard_changed(_total: int) -> void:
+	if _hud != null:
+		_hud.redraw_hoard()
+	if (phase == Phase.BUILD or phase == Phase.COMBAT) and _allure != null and is_instance_valid(_allure):
+		_allure.refresh_arrivals()
+
+
 func _on_hoard_empty() -> void:
 	if phase == Phase.WON or phase == Phase.LOST:
 		return
@@ -401,6 +484,12 @@ func _on_hoard_empty() -> void:
 func _on_hero_died(hero: Node, carried_gold: int) -> void:
 	var hero2d := hero as Node2D
 	var h: Hero = hero as Hero
+
+	## Kills feed Souls — the currency that recruits Anti-Heroes.
+	var soul_gain := 3
+	if h != null:
+		soul_gain = 2 + maxi(0, int(h.data.bounty / 8.0))
+	Bank.add_souls(soul_gain)
 
 	if h != null and h.data.bounty > 0:
 		var loot := Coin.new()
@@ -483,14 +572,24 @@ func _toggle_speed() -> void:
 func _tap(design_pos: Vector2) -> void:
 	var unit := _unit_at(design_pos)
 	if unit != null:
-		_select(unit)
+		## Tap a unit to inspect it; tap the SAME unit again to deselect.
+		_select(null if unit == _hud.inspected() else unit)
+		return
+	if get_tree().paused:
+		_select(null)
+		return
+	## A trap armed + a build node tapped always builds (takes priority).
+	var idx := _node_at(design_pos)
+	if idx >= 0 and _selected_trap != "" and _can_build():
+		_try_build(idx)
+		return
+	## Otherwise, if an Anti-Hero is selected, order it to guard this spot.
+	var sel := _hud.inspected()
+	if sel != null and is_instance_valid(sel) and sel is Minion:
+		(sel as Minion).command_to(design_pos, Callable(self, "_route_between"))
+		_hud.say("%s holds this ground." % (sel as Minion).data.unit_display())
 		return
 	_select(null)
-	if get_tree().paused or not _can_build():
-		return
-	var idx := _node_at(design_pos)
-	if idx >= 0:
-		_try_build(idx)
 
 
 func _can_build() -> bool:
@@ -508,6 +607,62 @@ func _select(unit: Node2D) -> void:
 		unit.z_index = 10
 		unit.queue_redraw()
 	_hud.inspect(unit)
+
+
+## Roster click selects the Anti-Hero; the next field tap posts it (see _tap).
+func _on_antihero_selected(unit: Node2D) -> void:
+	if unit != null and is_instance_valid(unit):
+		_select(unit)
+		_hud.say("%s ready — click the field to post it." % (unit as Minion).data.unit_display())
+
+
+# --- Store -----------------------------------------------------------------
+
+func _on_store_recruit(id: String, currency: String) -> void:
+	var d: MinionData = GameData.minions.get(id)
+	if d == null or Bank.is_unlocked(id):
+		return
+	if currency == "gems":
+		if not Bank.spend_gems(d.recruit_gems):
+			_hud.say("Not enough gems.")
+			return
+	else:
+		if not Bank.spend_souls(d.recruit_souls):
+			_hud.say("Not enough souls.")
+			return
+	Bank.unlock(id)
+	if _allure != null and is_instance_valid(_allure):
+		_allure.refresh_arrivals()
+	_hud.say("%s recruited." % d.display_name)
+	_hud.refresh_store()
+
+
+func _on_store_buy_gold() -> void:
+	if not Bank.spend_gems(Bank.GEM_GOLD_COST):
+		_hud.say("Not enough gems.")
+		return
+	EconomySystem.add_gold(Bank.GOLD_REFILL)
+	_hud.say("+%d gold to the hoard." % Bank.GOLD_REFILL)
+	_hud.refresh_store()
+
+
+func _on_store_buy_souls() -> void:
+	if not Bank.spend_gems(Bank.GEM_SOULS_COST):
+		_hud.say("Not enough gems.")
+		return
+	Bank.add_souls(Bank.SOULS_PACK)
+	_hud.say("+%d souls." % Bank.SOULS_PACK)
+	_hud.refresh_store()
+
+
+func _on_store_get_pack(pack_id: String) -> void:
+	Bank.purchase_gems(pack_id)
+	_hud.refresh_store()
+
+
+func _on_store_watch_ad() -> void:
+	Bank.watch_ad_for_gems()
+	_hud.refresh_store()
 
 
 func _unit_at(design_pos: Vector2) -> Node2D:
@@ -604,7 +759,7 @@ func _refresh() -> void:
 	var restless := false
 
 	if ids.is_empty():
-		minion_text = "No minions — your pile impresses nobody"
+		minion_text = "No Anti-Heroes drawn to your pile"
 		minion_col = Color(0.6, 0.6, 0.6)
 	else:
 		var names := []
@@ -623,7 +778,7 @@ func _refresh() -> void:
 				label += " (LEAVING!)"
 				restless = true
 			names.append(label)
-		minion_text = "Minions: " + ", ".join(names)
+		minion_text = "Anti-Heroes: " + ", ".join(names)
 		if restless:
 			minion_col = Color(1.0, 0.45, 0.3)
 

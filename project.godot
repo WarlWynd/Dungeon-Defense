@@ -24,6 +24,7 @@ EventBus="*res://scripts/autoload/event_bus.gd"
 GameData="*res://scripts/autoload/game_data.gd"
 EconomySystem="*res://scripts/autoload/economy_system.gd"
 Settings="*res://scripts/autoload/settings.gd"
+Bank="*res://scripts/autoload/bank.gd"
 
 [display]
 

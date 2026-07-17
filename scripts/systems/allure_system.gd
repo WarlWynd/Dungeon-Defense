@@ -8,17 +8,24 @@ class_name AllureSystem
 
 signal roster_changed()
 
-const SAFETY_NET_ID := "goblin_pack"
-
 var _spawn_points: Array[Vector2] = []
 var _active: Dictionary = {}      ## minion id -> Array[Minion]
 var _bases: Dictionary = {}       ## minion id -> int (post index they started at)
 var _container: Node2D
+var _wave: int = 0                 ## current wave index, drives "earn" unlocks
 
 
 func setup(container: Node2D, spawn_points: Array[Vector2]) -> void:
 	_container = container
 	_spawn_points = spawn_points
+
+
+## Tell the system which wave we're on and let any newly-earned Anti-Heroes
+## unlock and walk out. Called at the start of every build phase.
+func advance_to_wave(w: int) -> void:
+	_wave = w
+	_unlock_earned()
+	refresh_arrivals()
 
 
 ## Which minions WOULD be present at a hypothetical hoard fraction. Pure — the
@@ -28,12 +35,11 @@ func roster_at(fraction: float) -> Array[String]:
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		var present: bool = _is_present(id)
 		var keep: bool
-		if present:
-			keep = (fraction >= d.allure_desert) or (id == SAFETY_NET_ID)
+		if _is_present(id):
+			keep = _should_keep(id, d, fraction)
 		else:
-			keep = fraction >= d.allure_arrive
+			keep = _should_arrive(id, d, fraction)
 		if keep:
 			out.append(id)
 	return out
@@ -43,22 +49,68 @@ func roster_at(fraction: float) -> Array[String]:
 ## Deserts the too-expensive, arrives the newly-affordable, heals survivors,
 ## and replaces the dead. Never mid-wave.
 func refresh_roster() -> void:
+	_unlock_earned()
 	var frac := EconomySystem.hoard_fraction()
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		var present: bool = _is_present(id)
-		if present:
-			if frac < d.allure_desert and id != SAFETY_NET_ID:
-				_desert(id, d)
-			else:
+		if _is_present(id):
+			if _should_keep(id, d, frac):
 				_set_restless(id, false)
 				_mend(id, d)
 				_reinforce(id, d)
+			else:
+				_desert(id, d)
 		else:
-			if frac >= d.allure_arrive or id == SAFETY_NET_ID:
+			if _should_arrive(id, d, frac):
 				_arrive(id, d)
 	roster_changed.emit()
+
+
+## Arrivals ONLY — safe to call mid-wave. Brings out any minion that is absent
+## but now affordable (hoard >= its arrive threshold). Deliberately does NOT
+## desert, mend, or reinforce: a growing pile should attract help the instant it
+## grows, but LOSING minions stays between-wave (see refresh_roster) so the
+## restless telegraph and anti-death-spiral guardrails are preserved.
+func refresh_arrivals() -> void:
+	if _container == null or not is_instance_valid(_container):
+		return
+	var frac := EconomySystem.hoard_fraction()
+	var changed := false
+	for key in GameData.minions.keys():
+		var id: String = key
+		var d: MinionData = GameData.minions[id]
+		if _is_present(id):
+			continue
+		if _should_arrive(id, d, frac):
+			_arrive(id, d)
+			changed = true
+	if changed:
+		roster_changed.emit()
+
+
+## Acquisition rules. AUTO units (the Succubus) are drawn purely by the size of
+## the hoard. BUY/EARN units are present once UNLOCKED (bought with souls/gems in
+## the store, or earned by progression) and then never leave on their own.
+func _should_arrive(id: String, d: MinionData, frac: float) -> bool:
+	if d.acquire_mode == "auto":
+		return frac >= d.allure_arrive
+	return Bank.is_unlocked(id)
+
+
+func _should_keep(id: String, d: MinionData, frac: float) -> bool:
+	if d.acquire_mode == "auto":
+		return frac >= d.allure_desert
+	return Bank.is_unlocked(id)
+
+
+## Permanently unlock any "earn" Anti-Hero whose wave has been reached.
+func _unlock_earned() -> void:
+	for key in GameData.minions.keys():
+		var id: String = key
+		var d: MinionData = GameData.minions[id]
+		if d.acquire_mode == "earn" and not Bank.is_unlocked(id) and _wave >= d.unlock_wave:
+			Bank.unlock(id)
 
 
 func _mend(id: String, d: MinionData) -> void:
@@ -112,7 +164,7 @@ func update_restless_flags() -> void:
 	for key in _active.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		var leaving: bool = frac < d.allure_desert and id != SAFETY_NET_ID
+		var leaving: bool = d.acquire_mode == "auto" and frac < d.allure_desert
 		_set_restless(id, leaving)
 		if leaving:
 			EventBus.minion_restless.emit(d)

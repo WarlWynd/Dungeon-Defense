@@ -20,8 +20,19 @@ class_name MinionData
 @export var count: int = 3
 
 ## Allure thresholds: arrive (higher) and desert (lower). The gap is hysteresis.
+## Only used by AUTO units (drawn purely by the size of the hoard).
 @export var allure_arrive: float = 0.5
 @export var allure_desert: float = 0.4
+
+## How this Anti-Hero is acquired:
+##   "auto" — drawn automatically by a rich hoard (the Succubus). Uses allure.
+##   "buy"  — recruited with souls or gems; unlock is permanent.
+##   "earn" — unlocked by reaching unlock_wave; unlock is permanent.
+## BUY/EARN units, once unlocked, are always present and never desert.
+@export var acquire_mode: String = "auto"
+@export var recruit_souls: int = 0       ## souls cost for a "buy" unit
+@export var recruit_gems: int = 0        ## gems cost for a "buy" unit
+@export var unlock_wave: int = 0         ## wave index that unlocks an "earn" unit
 
 @export var pursue_thieves_first: bool = true
 

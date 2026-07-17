@@ -9,6 +9,12 @@ signal speed_pressed()
 signal trap_selected(id: String)
 signal switch_board_pressed()
 signal trap_slots_changed()
+signal antihero_selected(unit: Node2D)
+signal store_recruit(id: String, currency: String)
+signal store_buy_gold()
+signal store_buy_souls()
+signal store_get_pack(pack_id: String)
+signal store_watch_ad()
 
 var _root: Control
 var _hoard_bar: Control
@@ -31,6 +37,15 @@ var _wave_index: int = 0
 var _preview_cost: int = 0
 var _toast_timer: float = 0.0
 
+var _roster_box: VBoxContainer
+var _roster_rows: Dictionary = {}   ## instance_id -> {"btn": Button, "unit": Node}
+var _roster_sig: String = ""
+var _roster_balance: Label
+
+var _store_panel: Control
+var _store_box: VBoxContainer
+var _store_balance: Label
+
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -42,6 +57,8 @@ func _process(delta: float) -> void:
 		_toast_timer -= delta
 		if _toast_timer <= 0.0:
 			_toast.text = ""
+	if _store_panel != null and _store_panel.visible:
+		_update_store_balance()
 
 
 func _build() -> void:
@@ -52,12 +69,19 @@ func _build() -> void:
 
 	var controls := HBoxContainer.new()
 	controls.set_anchors_preset(Control.PRESET_TOP_RIGHT)
-	controls.offset_left = -344
+	controls.offset_left = -420
 	controls.offset_right = -16
 	controls.offset_top = 12
 	controls.offset_bottom = 56
 	controls.add_theme_constant_override("separation", 8)
 	_root.add_child(controls)
+
+	var shop_btn := Button.new()
+	shop_btn.custom_minimum_size = Vector2(64, 44)
+	shop_btn.text = "SHOP"
+	shop_btn.tooltip_text = "Store"
+	shop_btn.pressed.connect(_toggle_store)
+	controls.add_child(shop_btn)
 
 	var gear_btn := Button.new()
 	gear_btn.custom_minimum_size = Vector2(44, 44)
@@ -106,6 +130,8 @@ func _build() -> void:
 	_minion_label = _label(20, 240, 17, Color(0.6, 0.9, 0.5))
 	_toast = _label(20, 268, 18, Color(1.0, 0.85, 0.3))
 
+	_build_roster_panel()
+
 	_msg_label = Label.new()
 	_msg_label.set_anchors_preset(Control.PRESET_FULL_RECT)
 	_msg_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
@@ -115,14 +141,15 @@ func _build() -> void:
 	_root.add_child(_msg_label)
 
 	_inspector = Inspector.new()
-	_inspector.set_anchors_preset(Control.PRESET_BOTTOM_RIGHT)
-	_inspector.offset_left = -280
-	_inspector.offset_right = -12
-	_inspector.offset_top = -370
-	_inspector.offset_bottom = -120
+	_inspector.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	_inspector.offset_left = 12
+	_inspector.offset_right = 280
+	_inspector.offset_top = -262
+	_inspector.offset_bottom = -12
 	_root.add_child(_inspector)
 
 	_build_settings_panel()
+	_build_store_panel()
 
 	_bestiary = Bestiary.new()
 	_root.add_child(_bestiary)
@@ -133,6 +160,7 @@ func _build() -> void:
 	row.offset_right = -10
 	row.offset_top = -110
 	row.offset_bottom = -10
+	row.alignment = BoxContainer.ALIGNMENT_END   ## trap menu + UNLEASH sit bottom-right
 	row.add_theme_constant_override("separation", 8)
 	_root.add_child(row)
 
@@ -160,6 +188,258 @@ func _build() -> void:
 	_unleash_btn.text = "UNLEASH"
 	_unleash_btn.pressed.connect(func(): unleash_pressed.emit())
 	row.add_child(_unleash_btn)
+
+
+## Left-side list of the Anti-Heroes currently drawn to your hoard. Click a row
+## to select that unit; the next tap on the field posts it there (see main._tap).
+func _build_roster_panel() -> void:
+	var panel := Control.new()
+	panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
+	panel.offset_left = 12
+	panel.offset_right = 200
+	panel.offset_top = 306
+	panel.offset_bottom = -274   ## stop above the bottom-left inspector panel
+	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(panel)
+
+	var vb := VBoxContainer.new()
+	vb.set_anchors_preset(Control.PRESET_FULL_RECT)
+	vb.add_theme_constant_override("separation", 6)
+	vb.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	panel.add_child(vb)
+
+	var title := Label.new()
+	title.text = "ANTI-HEROES"
+	title.add_theme_font_size_override("font_size", 14)
+	title.add_theme_color_override("font_color", Color(0.85, 0.55, 0.8))
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(title)
+
+	_roster_balance = Label.new()
+	_roster_balance.add_theme_font_size_override("font_size", 12)
+	_roster_balance.add_theme_color_override("font_color", Color(0.75, 0.75, 0.6))
+	_roster_balance.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(_roster_balance)
+
+	## Scrollable list, so a long roster scrolls instead of overflowing.
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	vb.add_child(scroll)
+
+	_roster_box = VBoxContainer.new()
+	_roster_box.add_theme_constant_override("separation", 4)
+	_roster_box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(_roster_box)
+
+
+## Rebuild the roster only when the set of live units changes; refresh HP and the
+## selection highlight every frame. `selected` is the currently inspected unit.
+func _update_roster(selected) -> void:
+	## `selected` may be a freed unit (it just died) — untyped param + this guard
+	## avoids a type-check crash on the dangling reference.
+	if not is_instance_valid(selected):
+		selected = null
+	if _roster_box == null:
+		return
+	if _roster_balance != null:
+		_roster_balance.text = "Souls %d   Gems %d" % [Bank.souls, Bank.gems]
+	var units: Array = []
+	for n in get_tree().get_nodes_in_group("minions"):
+		if is_instance_valid(n):
+			units.append(n)
+
+	var sig := ""
+	for u in units:
+		sig += str(u.get_instance_id()) + ","
+	if sig != _roster_sig:
+		_rebuild_roster(units)
+		_roster_sig = sig
+
+	for key in _roster_rows.keys():
+		var row: Dictionary = _roster_rows[key]
+		var u = row["unit"]
+		if not is_instance_valid(u) or u.data == null:
+			continue
+		var btn: Button = row["btn"]
+		var tag := "  (LEAVING!)" if u.restless else ""
+		btn.text = "%s   %d/%d%s" % [u.data.unit_display(), int(round(u.hp)), int(u.data.max_hp), tag]
+		btn.button_pressed = (u == selected)
+
+
+func _rebuild_roster(units: Array) -> void:
+	for c in _roster_box.get_children():
+		c.queue_free()
+	_roster_rows.clear()
+	for u in units:
+		var btn := Button.new()
+		btn.toggle_mode = true
+		btn.custom_minimum_size = Vector2(170, 36)
+		btn.clip_text = true
+		btn.add_theme_font_size_override("font_size", 13)
+		btn.pressed.connect(_on_roster_click.bind(u))
+		_roster_box.add_child(btn)
+		_roster_rows[u.get_instance_id()] = {"btn": btn, "unit": u}
+
+
+func _on_roster_click(unit: Node) -> void:
+	if is_instance_valid(unit):
+		antihero_selected.emit(unit)
+
+
+## Modal store: recruit Anti-Heroes (souls or gems), spend gems on Gold/Souls,
+## and get gems from rewarded ads or cash packs (both stubbed for testing).
+func _build_store_panel() -> void:
+	_store_panel = Control.new()
+	_store_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_store_panel.visible = false
+	_root.add_child(_store_panel)
+
+	var scrim := ColorRect.new()
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.color = Color(0, 0, 0, 0.7)
+	scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	scrim.gui_input.connect(func(e: InputEvent):
+			if e is InputEventMouseButton and (e as InputEventMouseButton).pressed:
+				_toggle_store())
+	_store_panel.add_child(scrim)
+
+	var frame := PanelContainer.new()
+	frame.set_anchors_preset(Control.PRESET_CENTER)
+	frame.offset_left = -220
+	frame.offset_right = 220
+	frame.offset_top = -300
+	frame.offset_bottom = 300
+	_store_panel.add_child(frame)
+
+	var scroll := ScrollContainer.new()
+	frame.add_child(scroll)
+
+	_store_box = VBoxContainer.new()
+	_store_box.custom_minimum_size = Vector2(410, 0)
+	_store_box.add_theme_constant_override("separation", 8)
+	scroll.add_child(_store_box)
+
+
+func _toggle_store() -> void:
+	if _store_panel == null:
+		return
+	_store_panel.visible = not _store_panel.visible
+	if _store_panel.visible:
+		refresh_store()
+
+
+func _update_store_balance() -> void:
+	if _store_balance != null:
+		_store_balance.text = "Gold %d      Souls %d      Gems %d" % [EconomySystem.hoard, Bank.souls, Bank.gems]
+
+
+## Rebuild the whole store: recruit rows reflect current ownership/affordability,
+## then the Gem sinks, then the Gem sources.
+func refresh_store() -> void:
+	if _store_box == null:
+		return
+	for c in _store_box.get_children():
+		c.queue_free()
+
+	var title := Label.new()
+	title.text = "STORE"
+	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	title.add_theme_font_size_override("font_size", 24)
+	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25))
+	_store_box.add_child(title)
+
+	_store_balance = Label.new()
+	_store_balance.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_store_balance.add_theme_font_size_override("font_size", 15)
+	_store_box.add_child(_store_balance)
+	_update_store_balance()
+
+	_store_box.add_child(_section_header("Recruit Anti-Heroes"))
+	for key in GameData.minions.keys():
+		var id: String = key
+		var d: MinionData = GameData.minions[id]
+		if d.acquire_mode == "auto":
+			_store_box.add_child(_info_row("%s — drawn automatically by a rich hoard" % d.display_name))
+		elif Bank.is_unlocked(id):
+			_store_box.add_child(_info_row("%s — recruited" % d.display_name))
+		elif d.acquire_mode == "earn":
+			_store_box.add_child(_info_row("%s — earn by clearing wave %d" % [d.display_name, d.unlock_wave]))
+		else:
+			var row := HBoxContainer.new()
+			row.add_theme_constant_override("separation", 8)
+			var lbl := Label.new()
+			lbl.text = d.display_name
+			lbl.custom_minimum_size = Vector2(150, 0)
+			lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			row.add_child(lbl)
+			var sbtn := Button.new()
+			sbtn.text = "%d souls" % d.recruit_souls
+			sbtn.disabled = not Bank.can_afford_souls(d.recruit_souls)
+			sbtn.pressed.connect(store_recruit.emit.bind(id, "souls"))
+			row.add_child(sbtn)
+			var gbtn := Button.new()
+			gbtn.text = "%d gems" % d.recruit_gems
+			gbtn.disabled = not Bank.can_afford_gems(d.recruit_gems)
+			gbtn.pressed.connect(store_recruit.emit.bind(id, "gems"))
+			row.add_child(gbtn)
+			_store_box.add_child(row)
+
+	_store_box.add_child(_section_header("Spend Gems"))
+	var goldbtn := Button.new()
+	goldbtn.text = "+%d Gold  —  %d gems" % [Bank.GOLD_REFILL, Bank.GEM_GOLD_COST]
+	goldbtn.disabled = not Bank.can_afford_gems(Bank.GEM_GOLD_COST)
+	goldbtn.pressed.connect(store_buy_gold.emit)
+	_store_box.add_child(goldbtn)
+	var soulbtn := Button.new()
+	soulbtn.text = "+%d Souls  —  %d gems" % [Bank.SOULS_PACK, Bank.GEM_SOULS_COST]
+	soulbtn.disabled = not Bank.can_afford_gems(Bank.GEM_SOULS_COST)
+	soulbtn.pressed.connect(store_buy_souls.emit)
+	_store_box.add_child(soulbtn)
+
+	_store_box.add_child(_section_header("Get Gems"))
+	var adbtn := Button.new()
+	adbtn.text = "Watch Ad  —  +%d Gems" % Bank.AD_REWARD_GEMS
+	adbtn.pressed.connect(store_watch_ad.emit)
+	_store_box.add_child(adbtn)
+	for pack_key in Bank.GEM_PACKS.keys():
+		var pack_id: String = pack_key
+		var pack: Dictionary = Bank.GEM_PACKS[pack_id]
+		var pbtn := Button.new()
+		pbtn.text = "%d Gems  —  %s" % [int(pack["gems"]), pack["price"]]
+		pbtn.pressed.connect(store_get_pack.emit.bind(pack_id))
+		_store_box.add_child(pbtn)
+
+	var note := Label.new()
+	note.text = "Purchases and ads are stubbed for testing — no real charge."
+	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	note.add_theme_font_size_override("font_size", 11)
+	note.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_store_box.add_child(note)
+
+	var close := Button.new()
+	close.text = "CLOSE"
+	close.custom_minimum_size = Vector2(0, 44)
+	close.pressed.connect(_toggle_store)
+	_store_box.add_child(close)
+
+
+func _section_header(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 16)
+	l.add_theme_color_override("font_color", Color(0.85, 0.55, 0.8))
+	return l
+
+
+func _info_row(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.add_theme_font_size_override("font_size", 13)
+	l.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	return l
 
 
 func _build_settings_panel() -> void:
@@ -298,7 +578,9 @@ func inspect(unit: Node2D) -> void:
 
 
 func inspected() -> Node2D:
-	return _inspector.target()
+	if is_instance_valid(_inspector.target()):
+		return _inspector.target()
+	return null
 
 
 func redraw_hoard() -> void:
@@ -317,6 +599,7 @@ func refresh(is_build: bool, can_build: bool, wave_index: int,
 		var id: String = btn.get_meta("trap_id")
 		var d: TrapData = GameData.traps[id]
 		btn.disabled = not can_build or not EconomySystem.can_afford(d.cost)
+	_update_roster(_inspector.target())
 
 
 func _draw_hoard_bar() -> void:
