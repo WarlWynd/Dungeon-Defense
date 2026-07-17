@@ -40,3 +40,8 @@ enum Targeting {
 
 @export var color: Color = Color.WHITE
 @export var flavor: String = ""
+
+## Optional real artwork. When set, it REPLACES the procedural glyph both in the
+## trap tray and on the board — drop a texture here (e.g. a 64x64 sprite) with no
+## other code changes needed. Leave null to use the drawn placeholder glyph.
+@export var icon: Texture2D = null

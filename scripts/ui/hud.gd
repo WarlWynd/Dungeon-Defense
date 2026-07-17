@@ -117,18 +117,17 @@ func _build() -> void:
 	controls.add_child(_pause_btn)
 
 	_hoard_bar = Control.new()
-	_hoard_bar.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	_hoard_bar.offset_left = 20
-	_hoard_bar.offset_right = -20
-	_hoard_bar.offset_top = 62
-	_hoard_bar.offset_bottom = 180
+	_hoard_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
+	_hoard_bar.offset_left = 12
+	_hoard_bar.offset_right = -490   ## leave the bottom-right for the trap tray
+	_hoard_bar.offset_top = -68
+	_hoard_bar.offset_bottom = -12
 	_hoard_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hoard_bar.draw.connect(_draw_hoard_bar)
 	_root.add_child(_hoard_bar)
 
-	_wave_label = _label(20, 188, 19, Color(0.9, 0.9, 0.9))
-	_minion_label = _label(20, 240, 17, Color(0.6, 0.9, 0.5))
-	_toast = _label(20, 268, 18, Color(1.0, 0.85, 0.3))
+	_wave_label = _label(20, 18, 19, Color(0.9, 0.9, 0.9))
+	_toast = _label(20, 70, 18, Color(1.0, 0.85, 0.3))
 
 	_build_roster_panel()
 
@@ -144,8 +143,8 @@ func _build() -> void:
 	_inspector.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
 	_inspector.offset_left = 12
 	_inspector.offset_right = 280
-	_inspector.offset_top = -262
-	_inspector.offset_bottom = -12
+	_inspector.offset_top = -300
+	_inspector.offset_bottom = -72   ## sit just above the bottom-left hoard bar
 	_root.add_child(_inspector)
 
 	_build_settings_panel()
@@ -158,8 +157,8 @@ func _build() -> void:
 	row.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	row.offset_left = 10
 	row.offset_right = -10
-	row.offset_top = -110
-	row.offset_bottom = -10
+	row.offset_top = -66
+	row.offset_bottom = -8
 	row.alignment = BoxContainer.ALIGNMENT_END   ## trap menu + UNLEASH sit bottom-right
 	row.add_theme_constant_override("separation", 8)
 	_root.add_child(row)
@@ -172,19 +171,50 @@ func _build() -> void:
 		var id: String = key
 		var d: TrapData = GameData.traps[id]
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(96, 92)
+		b.custom_minimum_size = Vector2(64, 58)
 		b.toggle_mode = true
-		var kind := d.damage_type
-		if d.kind == TrapData.Kind.SLOW_AURA:
-			kind = "slow"
-		b.text = "%s\n%d g %s" % [d.display_name, d.cost, kind]
-		b.tooltip_text = d.flavor
+		b.tooltip_text = "%s — %s" % [d.display_name, d.flavor]
 		b.set_meta("trap_id", id)
 		b.pressed.connect(_on_trap_button.bind(id))
+
+		## Icon on top (the trap's in-game glyph), cost underneath.
+		var col := VBoxContainer.new()
+		col.set_anchors_preset(Control.PRESET_FULL_RECT)
+		col.add_theme_constant_override("separation", 0)
+		col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		b.add_child(col)
+
+		if d.icon != null:
+			## Real art assigned — show the sprite.
+			var tex := TextureRect.new()
+			tex.texture = d.icon
+			tex.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+			tex.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+			tex.custom_minimum_size = Vector2(0, 38)
+			tex.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			tex.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			col.add_child(tex)
+		else:
+			## Placeholder — draw the trap's in-game glyph.
+			var icon := Control.new()
+			icon.custom_minimum_size = Vector2(0, 38)
+			icon.size_flags_vertical = Control.SIZE_EXPAND_FILL
+			icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			icon.draw.connect(_draw_trap_icon.bind(icon, d))
+			col.add_child(icon)
+
+		var cost := Label.new()
+		cost.text = "%dg" % d.cost
+		cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cost.add_theme_font_size_override("font_size", 12)
+		cost.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(cost)
+
 		_tray.add_child(b)
 
 	_unleash_btn = Button.new()
-	_unleash_btn.custom_minimum_size = Vector2(120, 92)
+	_unleash_btn.custom_minimum_size = Vector2(104, 58)
+	_unleash_btn.add_theme_font_size_override("font_size", 13)
 	_unleash_btn.text = "UNLEASH"
 	_unleash_btn.pressed.connect(func(): unleash_pressed.emit())
 	row.add_child(_unleash_btn)
@@ -197,8 +227,8 @@ func _build_roster_panel() -> void:
 	panel.set_anchors_preset(Control.PRESET_LEFT_WIDE)
 	panel.offset_left = 12
 	panel.offset_right = 200
-	panel.offset_top = 306
-	panel.offset_bottom = -274   ## stop above the bottom-left inspector panel
+	panel.offset_top = 106
+	panel.offset_bottom = -310   ## stop above the bottom-left inspector panel
 	panel.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_root.add_child(panel)
 
@@ -591,8 +621,6 @@ func refresh(is_build: bool, can_build: bool, wave_index: int,
 		wave_text: String, minion_text: String, minion_col: Color) -> void:
 	_wave_index = wave_index
 	_wave_label.text = wave_text
-	_minion_label.text = minion_text
-	_minion_label.add_theme_color_override("font_color", minion_col)
 	_unleash_btn.disabled = not is_build
 	for b in _tray.get_children():
 		var btn := b as Button
@@ -602,13 +630,41 @@ func refresh(is_build: bool, can_build: bool, wave_index: int,
 	_update_roster(_inspector.target())
 
 
+## Procedural fallback icon for a trap tray button — used until real art is
+## assigned to TrapData.icon. Mirrors the glyph the trap draws on the board.
+func _draw_trap_icon(icon: Control, d: TrapData) -> void:
+	var ctr := icon.size * 0.5
+	var col := d.color
+	match d.kind:
+		TrapData.Kind.AREA_DAMAGE:
+			icon.draw_rect(Rect2(ctr - Vector2(14, 14), Vector2(28, 28)), col)
+			for i in 3:
+				var x := ctr.x - 9.0 + i * 9.0
+				icon.draw_line(Vector2(x, ctr.y + 8), Vector2(x, ctr.y - 8), Color(0.9, 0.9, 0.95), 2.0)
+			icon.draw_rect(Rect2(ctr - Vector2(14, 14), Vector2(28, 28)), Color(0, 0, 0, 0.4), false, 1.5)
+		TrapData.Kind.TURRET:
+			icon.draw_rect(Rect2(ctr - Vector2(13, 13), Vector2(26, 26)), col)
+			icon.draw_line(ctr, ctr + Vector2(15, -9), Color(0.95, 0.9, 0.7), 3.0)
+			icon.draw_rect(Rect2(ctr - Vector2(13, 13), Vector2(26, 26)), Color(0, 0, 0, 0.4), false, 1.5)
+		TrapData.Kind.SLOW_AURA:
+			icon.draw_circle(ctr, 14.0, col)
+			icon.draw_arc(ctr, 14.0, 0.0, TAU, 20, Color(1, 1, 1, 0.85), 2.0)
+			icon.draw_line(ctr + Vector2(-7, 0), ctr + Vector2(7, 0), Color(1, 1, 1, 0.7), 1.5)
+			icon.draw_line(ctr + Vector2(0, -7), ctr + Vector2(0, 7), Color(1, 1, 1, 0.7), 1.5)
+		TrapData.Kind.WEAKEN_AURA:
+			icon.draw_circle(ctr, 14.0, col)
+			icon.draw_arc(ctr, 14.0, 0.0, TAU, 20, Color(0.2, 0, 0.1, 0.9), 2.0)
+			icon.draw_line(ctr + Vector2(-6, -6), ctr + Vector2(6, 6), Color(0.15, 0, 0.08), 2.0)
+			icon.draw_line(ctr + Vector2(6, -6), ctr + Vector2(-6, 6), Color(0.15, 0, 0.08), 2.0)
+
+
 func _draw_hoard_bar() -> void:
 	var c := _hoard_bar
 	var w: float = c.size.x
 	if w <= 0.0:
 		return
-	var h := 32.0
-	var top := 34.0
+	var h := 16.0
+	var top := 32.0
 
 	var frac := EconomySystem.hoard_fraction()
 	var after := frac
@@ -616,17 +672,19 @@ func _draw_hoard_bar() -> void:
 		after = maxf(0.0, float(EconomySystem.hoard - _preview_cost) / float(EconomySystem.starting_hoard))
 
 	var f := ThemeDB.fallback_font
-	c.draw_string(f, Vector2(0, 24), "HOARD  %d / %d" % [EconomySystem.hoard, EconomySystem.starting_hoard],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 26, Color(1.0, 0.85, 0.25))
+	var title := "HOARD  %d / %d" % [EconomySystem.hoard, EconomySystem.starting_hoard]
+	if _preview_cost > 0:
+		title += "     spending %d" % _preview_cost
+	c.draw_string(f, Vector2(0, 18), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(1.0, 0.85, 0.25))
 
 	c.draw_rect(Rect2(Vector2(0, top), Vector2(w, h)), Color(0.13, 0.11, 0.09))
-
 	if _preview_cost > 0:
 		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), Color(0.55, 0.28, 0.15))
 		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * after, h)), Color(0.95, 0.78, 0.2))
 	else:
 		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), Color(0.95, 0.78, 0.2))
 
+	## Allure thresholds — a colored tick with the unit's name centered above it.
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
@@ -634,8 +692,7 @@ func _draw_hoard_bar() -> void:
 		var present := after >= d.allure_arrive
 		var losing := (frac >= d.allure_desert) and (after < d.allure_desert)
 		var col := Color(1.0, 0.3, 0.25) if losing else (d.color if present else Color(0.45, 0.45, 0.45))
-		c.draw_line(Vector2(x, top - 6), Vector2(x, top + h + 6), col, 3.0)
-		c.draw_string(f, Vector2(x - 30, top + h + 24), d.display_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, col)
-
-	if _preview_cost > 0:
-		c.draw_string(f, Vector2(0, top + h + 44), "spending %d..." % _preview_cost, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(0.9, 0.6, 0.3))
+		c.draw_line(Vector2(x, top - 5), Vector2(x, top + h + 5), col, 3.0)
+		var nm: String = d.display_name
+		var nw := f.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		c.draw_string(f, Vector2(x - nw * 0.5, 18), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)

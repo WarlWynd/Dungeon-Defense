@@ -13,6 +13,11 @@ var _active: Dictionary = {}      ## minion id -> Array[Minion]
 var _bases: Dictionary = {}       ## minion id -> int (post index they started at)
 var _container: Node2D
 var _wave: int = 0                 ## current wave index, drives "earn" unlocks
+var _router: Callable = Callable() ## corridor router handed to each spawned unit
+
+
+func set_router(r: Callable) -> void:
+	_router = r
 
 
 func setup(container: Node2D, spawn_points: Array[Vector2]) -> void:
@@ -147,6 +152,7 @@ func _reinforce(id: String, d: MinionData) -> void:
 			continue
 		var m := Minion.new()
 		m.setup(d, _pick_spawn(base + i))
+		m.set_router(_router)
 		m.pack_index = i
 		m.pack_size = d.count
 		m.add_to_group("minions")
@@ -245,6 +251,7 @@ func _arrive(id: String, d: MinionData) -> void:
 	for i in d.count:
 		var m := Minion.new()
 		m.setup(d, _pick_spawn(start + i))
+		m.set_router(_router)
 		m.pack_index = i
 		m.pack_size = d.count
 		m.add_to_group("minions")

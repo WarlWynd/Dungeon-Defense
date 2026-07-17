@@ -136,28 +136,37 @@ func _draw() -> void:
 	var flashing := _flash > 0.0
 	var body := c.lightened(0.5) if flashing else c
 
-	match data.kind:
-		TrapData.Kind.AREA_DAMAGE:
-			draw_rect(Rect2(Vector2(-14, -14), Vector2(28, 28)), body)
-			for i in 3:
-				var x := -9.0 + i * 9.0
-				draw_line(Vector2(x, 8), Vector2(x, -8), Color(0.9, 0.9, 0.95), 2.0)
-		TrapData.Kind.TURRET:
-			draw_rect(Rect2(Vector2(-13, -13), Vector2(26, 26)), body)
-			if _muzzle != Vector2.ZERO:
-				draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.95, 0.9, 0.7), 3.0)
-			if flashing and _muzzle != Vector2.ZERO:
-				draw_line(Vector2.ZERO, _muzzle, Color(1, 1, 0.8, 0.5), 1.0)
-		TrapData.Kind.SLOW_AURA:
-			draw_circle(Vector2.ZERO, 13.0, body)
-			draw_arc(Vector2.ZERO, 13.0, 0.0, TAU, 20, Color(1, 1, 1, 0.8), 2.0)
-		TrapData.Kind.WEAKEN_AURA:
-			draw_circle(Vector2.ZERO, 13.0, body)
-			draw_arc(Vector2.ZERO, 13.0, 0.0, TAU, 20, Color(0.2, 0, 0.1, 0.9), 2.0)
-			draw_line(Vector2(-6, -6), Vector2(6, 6), Color(0.15, 0, 0.08), 2.0)
-			draw_line(Vector2(6, -6), Vector2(-6, 6), Color(0.15, 0, 0.08), 2.0)
+	if data.icon != null:
+		## Real art assigned — draw the sprite in place of the glyph.
+		var s := 34.0
+		draw_texture_rect(data.icon, Rect2(Vector2(-s * 0.5, -s * 0.5), Vector2(s, s)), false)
+		if flashing:
+			draw_texture_rect(data.icon, Rect2(Vector2(-s * 0.5, -s * 0.5), Vector2(s, s)), false, Color(1, 1, 1, 0.4))
+		if data.kind == TrapData.Kind.TURRET and _muzzle != Vector2.ZERO:
+			draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.95, 0.9, 0.7), 3.0)
+	else:
+		match data.kind:
+			TrapData.Kind.AREA_DAMAGE:
+				draw_rect(Rect2(Vector2(-14, -14), Vector2(28, 28)), body)
+				for i in 3:
+					var x := -9.0 + i * 9.0
+					draw_line(Vector2(x, 8), Vector2(x, -8), Color(0.9, 0.9, 0.95), 2.0)
+			TrapData.Kind.TURRET:
+				draw_rect(Rect2(Vector2(-13, -13), Vector2(26, 26)), body)
+				if _muzzle != Vector2.ZERO:
+					draw_line(Vector2.ZERO, _muzzle.normalized() * 18.0, Color(0.95, 0.9, 0.7), 3.0)
+				if flashing and _muzzle != Vector2.ZERO:
+					draw_line(Vector2.ZERO, _muzzle, Color(1, 1, 0.8, 0.5), 1.0)
+			TrapData.Kind.SLOW_AURA:
+				draw_circle(Vector2.ZERO, 13.0, body)
+				draw_arc(Vector2.ZERO, 13.0, 0.0, TAU, 20, Color(1, 1, 1, 0.8), 2.0)
+			TrapData.Kind.WEAKEN_AURA:
+				draw_circle(Vector2.ZERO, 13.0, body)
+				draw_arc(Vector2.ZERO, 13.0, 0.0, TAU, 20, Color(0.2, 0, 0.1, 0.9), 2.0)
+				draw_line(Vector2(-6, -6), Vector2(6, 6), Color(0.15, 0, 0.08), 2.0)
+				draw_line(Vector2(6, -6), Vector2(-6, 6), Color(0.15, 0, 0.08), 2.0)
 
-	draw_rect(Rect2(Vector2(-14, -14), Vector2(28, 28)), Color(0, 0, 0, 0.35), false, 1.5)
+		draw_rect(Rect2(Vector2(-14, -14), Vector2(28, 28)), Color(0, 0, 0, 0.35), false, 1.5)
 
 	if selected:
 		draw_arc(Vector2.ZERO, 22.0, 0.0, TAU, 28, Color(1, 1, 1, 0.95), 2.5)

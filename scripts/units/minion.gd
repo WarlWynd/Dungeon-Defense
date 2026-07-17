@@ -23,6 +23,13 @@ var _had_target: bool = false
 var _router: Callable = Callable()
 var _route: PackedVector2Array = PackedVector2Array()
 var _route_i: int = 0
+var _chase_route: PackedVector2Array = PackedVector2Array()
+var _chase_i: int = 0
+var _chase_target_pos: Vector2 = Vector2.ZERO
+
+
+func set_router(r: Callable) -> void:
+	_router = r
 
 var restless: bool = false   ## telegraphed "about to leave" during build window
 var selected: bool = false
@@ -67,9 +74,33 @@ func _set_route_to(target: Vector2) -> void:
 	_route_i = 0
 
 
+## Move toward a (moving) target along the corridors instead of straight through
+## the stone. The route is refreshed only when the target drifts far enough to
+## matter, so it's cheap even with several units chasing.
+func _chase_toward(target_pos: Vector2, delta: float) -> void:
+	if not _router.is_valid():
+		position += (target_pos - position).normalized() * data.speed * delta
+		return
+	if _chase_route.is_empty() or _chase_i >= _chase_route.size() \
+			or _chase_target_pos.distance_to(target_pos) > 40.0:
+		_chase_route = _router.call(position, target_pos)
+		_chase_i = 0
+		_chase_target_pos = target_pos
+	while _chase_i < _chase_route.size():
+		var wp: Vector2 = _chase_route[_chase_i]
+		var to_wp := wp - position
+		if to_wp.length() <= 8.0:
+			_chase_i += 1
+			continue
+		position += to_wp.normalized() * data.speed * delta
+		return
+	## Route consumed — final straight step onto the target.
+	position += (target_pos - position).normalized() * data.speed * delta
+
+
 ## Walk the corridor waypoints to the post, then step onto the exact spot.
 func _follow_route(delta: float) -> void:
-	var spd := data.speed
+	var spd := data.speed * (1.0 if commanded else 0.6)
 	while _route_i < _route.size():
 		var wp: Vector2 = _route[_route_i]
 		var to_wp := wp - position
@@ -103,11 +134,11 @@ func _physics_process(delta: float) -> void:
 			_charm_cd = data.charm_cooldown
 
 	if _target == null:
-		## Just finished a chase — recompute the corridor route back to the post.
-		if commanded and _had_target:
+		## Just lost a target — recompute a corridor route back to the post/home.
+		if _had_target and _router.is_valid():
 			_set_route_to(_home)
 		_had_target = false
-		if commanded and not _route.is_empty():
+		if not _route.is_empty():
 			_follow_route(delta)
 		else:
 			_return_home(delta)
@@ -115,10 +146,9 @@ func _physics_process(delta: float) -> void:
 		return
 
 	_had_target = true
-	var to_target := _target.position - position
-	var dist := to_target.length()
+	var dist := _target.position.distance_to(position)
 	if dist > data.attack_range:
-		position += to_target.normalized() * data.speed * delta
+		_chase_toward(_target.position, delta)
 	elif _attack_cd <= 0.0:
 		_target.take_damage(data.damage, "physical")
 		_attack_cd = data.attack_rate

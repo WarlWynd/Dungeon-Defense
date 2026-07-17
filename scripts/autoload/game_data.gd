@@ -220,6 +220,8 @@ func _build_minions() -> void:
 	goblins.attack_range = 26.0
 	goblins.count = 3
 	goblins.pursue_thieves_first = true
+	goblins.allure_arrive = 0.50        ## bar-marker position (earned, not hoard-summoned)
+	goblins.allure_desert = 0.40
 	goblins.acquire_mode = "earn"       ## EARNED by surviving your first wave
 	goblins.unlock_wave = 1
 	goblins.color = Color(0.45, 0.72, 0.35)
@@ -264,6 +266,8 @@ func _build_minions() -> void:
 	wraith.attack_range = 28.0
 	wraith.count = 1
 	wraith.pursue_thieves_first = true
+	wraith.allure_arrive = 0.90         ## bar-marker position (bought, not hoard-summoned)
+	wraith.allure_desert = 0.85
 	wraith.acquire_mode = "buy"
 	wraith.recruit_souls = 25
 	wraith.recruit_gems = 30

@@ -39,8 +39,8 @@ const MINION_POST_OFFSETS := [400.0, 300.0, 205.0, 115.0, 65.0, 35.0]
 ## trap tray + UNLEASH (bottom-right); LEFT covers the Anti-Heroes roster panel
 ## and the inspector panel (both bottom-left); RIGHT is now clear. Tune these if
 ## the HUD layout in hud.gd changes.
-const HUD_TOP_RESERVE := 300.0
-const HUD_BOTTOM_RESERVE := 120.0
+const HUD_TOP_RESERVE := 100.0
+const HUD_BOTTOM_RESERVE := 74.0
 const HUD_RIGHT_RESERVE := 0.0
 const HUD_LEFT_RESERVE := 290.0
 
@@ -114,6 +114,7 @@ func _load_board() -> void:
 	_allure = AllureSystem.new()
 	_allure.process_mode = Node.PROCESS_MODE_PAUSABLE
 	_allure.setup(_world, _minion_posts())
+	_allure.set_router(Callable(self, "_route_between"))
 	add_child(_allure)
 
 	_generate_build_nodes()
