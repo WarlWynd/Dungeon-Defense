@@ -40,7 +40,16 @@ func _process(delta: float) -> void:
 
 
 func _draw() -> void:
-	var col := Color(1.0, 0.92, 0.55) if is_plunder else Color(1.0, 0.84, 0.2)
-	var r := 5.5 if is_plunder else 7.0
-	draw_circle(Vector2.ZERO, r, col)
-	draw_arc(Vector2.ZERO, r, 0.0, TAU, 14, Color(0.5, 0.35, 0.0), 1.5)
+	## A small stack of coins flying home, not a single disc — the same shape the
+	## vault and the thief use, so you can see it's YOUR pile coming back.
+	var gold := Color(1.0, 0.92, 0.55) if is_plunder else Color(1.0, 0.84, 0.2)
+	var edge := Color(0.5, 0.35, 0.0)
+	var coins := 2 if is_plunder else 3
+	draw_set_transform(Vector2.ZERO, -global_rotation, Vector2.ONE)
+	for i in coins:
+		var w := 12.0 - 1.7 * float(i)
+		var y := -3.6 * float(i)
+		var r := Rect2(Vector2(-w * 0.5, y - 3.2), Vector2(w, 3.6))
+		draw_rect(r, gold)
+		draw_rect(r, edge, false, 1.0)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

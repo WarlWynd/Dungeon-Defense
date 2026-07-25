@@ -12,9 +12,9 @@ A Godot 4 project. Colored shapes, no art, no menus, no meta-progression. That's
 
 The dungeon runs top (entrance) to bottom (vault). The glowing gold pile at the bottom is your **Hoard** — it is your build currency, your health bar, your Allure rating and your score, all at the same time.
 
-During **BUILD**, tap a trap in the bottom tray, then tap a glowing circle on the map to place it. Hit **UNLEASH** (or wait out the timer) to start the wave.
+During **BUILD**, tap a trap in the bottom tray, then tap a glowing circle on the map to place it. Hit **START** (or wait out the timer) to start the wave.
 
-**Keys:** `P` / `Space` / `Esc` pause · `F` toggles 2× speed · `R` swaps the window between portrait and landscape. There are on-screen **PAUSE** and **1x/2x** buttons top-right too — the game owns its own pause, because Godot's editor pause button lives in the embedded-game toolbar and vanishes when you un-embed the game to test rotation.
+**Keys:** `P` / `Space` / `Esc` pause · `F` cycles speed 1× → 2× → 3× → 1× · `R` swaps the window between portrait and landscape. There are on-screen **PAUSE** and **speed** controls top-right too — the game owns its own pause, because Godot's editor pause button lives in the embedded-game toolbar and vanishes when you un-embed the game to test rotation. The speed control is a spinner (arrows clamp at 1× and 3×); the **board picker** spinner sits bottom-left, ahead of the hoard bar.
 
 To test rotation you need the game running in its own window: **Editor Settings → Run → Window Placement → Game Embed Mode → Disabled**. (Dragging the window wider than it is tall also works — the dungeon re-fits and rotates automatically.)
 

@@ -47,6 +47,13 @@ class_name MinionData
 @export var radius: float = 11.0
 @export_multiline var description: String = ""
 
+## Bestiary copy. Kept as separate bullet lists rather than prose so the panel
+## can colour them and the player can compare two Anti-Heroes line by line.
+## Every entry should cite a NUMBER — "cannot kill armour" is a vibe, "17.8 DPS
+## becomes 4.4 against 75% armour" is a decision.
+@export var strengths: PackedStringArray = PackedStringArray()
+@export var weaknesses: PackedStringArray = PackedStringArray()
+
 
 ## The name of the creature you actually tapped.
 func unit_display() -> String:

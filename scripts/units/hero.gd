@@ -1,6 +1,12 @@
 extends Node2D
 class_name Hero
 
+const UnitGlyphs := preload("res://scripts/data/unit_glyphs.gd")
+const WalkMotion := preload("res://scripts/data/walk_motion.gd")
+
+var _walk := WalkMotion.new()
+var _prev_pos := Vector2.ZERO
+
 ## A "good guy" — here to steal your gold and leave. You are the dungeon.
 ## State machine IS the game: ADVANCING -> LOOTING -> FLEEING -> ESCAPED.
 ## Kill it while FLEEING and the gold comes home; let it ESCAPE and it's gone.
@@ -47,11 +53,19 @@ var _rot_timer: float = 0.0
 var _rot_damage_bonus: float = 0.0
 var _rot_heal_cut: float = 0.0
 
+## Real art, when HeroData.frames is assigned. Null means we fall back to the
+## procedural glyph in _draw(). `_facing` is the compass letter of the animation
+## currently playing; it persists while the hero stands still (looting, fighting)
+## so a stopped hero keeps facing the way it was walking.
+var _sprite: AnimatedSprite2D
+var _facing: String = "s"
+
 const LOOT_DURATION := 0.55
 
 
 func setup(hero_data: HeroData, approach: Curve2D, escape: Curve2D = null) -> void:
 	data = hero_data
+	_init_sprite()
 	_approach = approach
 	_escape = escape if escape != null else _reversed(approach)
 	_escape_length = _escape.get_baked_length()
@@ -63,6 +77,54 @@ func setup(hero_data: HeroData, approach: Curve2D, escape: Curve2D = null) -> vo
 
 	hp = data.max_hp
 	position = _curve.sample_baked(0.0)
+	_prev_pos = position
+
+
+## z_index -1 puts the sprite UNDER this node's own _draw() output. Children
+## normally paint over their parent, which would bury the HP bar and the carried
+## coin stack behind the art.
+func _init_sprite() -> void:
+	if data == null or data.frames == null:
+		return
+	_sprite = AnimatedSprite2D.new()
+	_sprite.sprite_frames = data.frames
+	_sprite.scale = Vector2(data.sprite_scale, data.sprite_scale)
+	_sprite.z_index = -1
+	add_child(_sprite)
+	_play_facing()
+
+
+## Picks the compass direction from how the hero moved ON SCREEN. The world node
+## is rotated -90 deg in landscape (main._fit_world), so the raw world delta is
+## turned by global_rotation first — otherwise every hero would face sideways in
+## one orientation and correctly in the other.
+func _face_toward(world_delta: Vector2) -> void:
+	if _sprite == null or world_delta.length_squared() < 0.0001:
+		return
+	var screen := world_delta.rotated(global_rotation)
+	var dir: String
+	if absf(screen.x) > absf(screen.y):
+		dir = "e" if screen.x > 0.0 else "w"
+	else:
+		dir = "s" if screen.y > 0.0 else "n"
+	if dir == _facing:
+		return
+	_facing = dir
+	_play_facing()
+
+
+## West falls back to a mirrored East, so three direction sets is enough art.
+func _play_facing() -> void:
+	if _sprite == null:
+		return
+	var anim := "walk_%s" % _facing
+	if _facing == "w" and not _sprite.sprite_frames.has_animation(anim):
+		anim = "walk_e"
+		_sprite.flip_h = true
+	else:
+		_sprite.flip_h = false
+	if _sprite.sprite_frames.has_animation(anim):
+		_sprite.play(anim)
 
 
 func _reversed(c: Curve2D) -> Curve2D:
@@ -177,6 +239,13 @@ func take_damage(amount: float, damage_type: String = "physical") -> void:
 
 
 func _physics_process(delta: float) -> void:
+	## Walk juice, updated first so it runs before any early return below. Velocity
+	## is last frame's displacement — a frame of lag no one can see. queue_redraw so
+	## the bob/lean animates even when nothing else changed this frame.
+	_walk.update(delta, (position - _prev_pos) / maxf(delta, 0.0001), global_rotation, data.radius)
+	_prev_pos = position
+	queue_redraw()
+
 	_attack_cd = maxf(0.0, _attack_cd - delta)
 
 	if data.purity_aura > 0.0 and is_alive():
@@ -309,7 +378,9 @@ func _move(delta: float, direction: float) -> void:
 
 	_progress += speed * direction * delta
 	_progress = clampf(_progress, 0.0, _path_length)
+	var prev := position
 	position = _curve.sample_baked(_progress)
+	_face_toward(position - prev)
 
 	if _on_escape:
 		if _progress >= _path_length:
@@ -392,8 +463,14 @@ func _draw() -> void:
 	if is_blessed() and data.purity_aura <= 0.0:
 		draw_arc(Vector2.ZERO, r + 5.0, 0.0, TAU, 20, Color(1.0, 0.97, 0.75, 0.9), 2.0)
 
-	draw_circle(Vector2.ZERO, r, data.color)
-	draw_arc(Vector2.ZERO, r, 0.0, TAU, 20, Color(0, 0, 0, 0.45), 1.5)
+	## Body only when there's no art — every ring and overlay around it still
+	## applies either way. The helm glyph is the same one the Bestiary draws, kept
+	## screen-upright (cancel world rotation) so it always faces the player.
+	if _sprite == null:
+		draw_set_transform(Vector2.ZERO, -global_rotation + _walk.rotation, _walk.scale)
+		UnitGlyphs.legs(self, _walk.offset, r / 8.0, _walk.stride, data.color)
+		UnitGlyphs.draw(self, _walk.offset, r / 8.0, "hero", data.id, data.color)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 	if selected:
 		draw_arc(Vector2.ZERO, r + 11.0, 0.0, TAU, 28, Color(1, 1, 1, 0.95), 2.5)
@@ -415,8 +492,17 @@ func _draw() -> void:
 	draw_rect(Rect2(bar, Vector2(w, 3.0)), Color(0, 0, 0, 0.55))
 	draw_rect(Rect2(bar, Vector2(w * pct, 3.0)), Color(0.85, 0.25, 0.25))
 
+	## What it's carrying is a small STACK of coins, matching the vault it came
+	## out of — a thief is visibly holding part of your pile.
 	if is_carrying():
-		draw_circle(Vector2(0, -r - 17.0), 5.0, Color(1.0, 0.84, 0.2))
-		draw_arc(Vector2(0, -r - 17.0), 5.0, 0.0, TAU, 12, Color(0.5, 0.35, 0.0), 1.0)
+		var base := -r - 14.0
+		var gold := Color(1.0, 0.84, 0.2)
+		var edge := Color(0.5, 0.35, 0.0)
+		for i in 3:
+			var cw := 11.0 - 1.6 * float(i)
+			var cy := base - 3.4 * float(i)
+			var cr := Rect2(Vector2(-cw * 0.5, cy - 3.0), Vector2(cw, 3.4))
+			draw_rect(cr, gold)
+			draw_rect(cr, edge, false, 1.0)
 
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)

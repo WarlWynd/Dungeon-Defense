@@ -38,6 +38,25 @@ class_name HeroData
 @export var radius: float = 12.0
 @export_multiline var description: String = ""
 
+## --- Art ---
+## Optional. Leave null and the hero draws its procedural glyph instead, so art
+## can land one class at a time. Build this from a PNG sprite SHEET (one texture
+## per hero, sliced in the SpriteFrames editor) — Godot has no GIF importer, and
+## GIF's 1-bit alpha would hard-edge against the glow rings Hero._draw() puts
+## behind the body.
+##
+## Animations must be named "walk_n" / "walk_e" / "walk_s" / "walk_w", pointing
+## the way the hero moves ON SCREEN. "walk_w" is optional: leave it out and
+## "walk_e" is mirrored for it, so three direction sets cover all four.
+@export var frames: SpriteFrames
+@export var sprite_scale: float = 1.0
+
+## Bestiary copy. Bullet lists rather than prose so the panel can colour them.
+## Every entry should cite a NUMBER — "tough" is a vibe, "75% armour makes a
+## crossbow take 22 seconds" is a decision.
+@export var strengths: PackedStringArray = PackedStringArray()
+@export var weaknesses: PackedStringArray = PackedStringArray()
+
 
 const RESIST_CAP := 0.8
 const BASE_POWER := 0.5

@@ -5,11 +5,12 @@ class_name Hud
 
 signal unleash_pressed()
 signal pause_pressed()
-signal speed_pressed()
+signal speed_step_pressed(delta: int)
 signal trap_selected(id: String)
-signal switch_board_pressed()
+signal board_step_pressed(delta: int)
 signal trap_slots_changed()
 signal antihero_selected(unit: Node2D)
+signal trap_sell_pressed(trap: Node2D)
 signal store_recruit(id: String, currency: String)
 signal store_buy_gold()
 signal store_buy_souls()
@@ -21,19 +22,30 @@ var _hoard_bar: Control
 var _wave_label: Label
 var _minion_label: Label
 var _toast: Label
-var _msg_label: Label
+var _msg_label: RichTextLabel
 var _tray: HBoxContainer
 var _unleash_btn: Button
 var _pause_btn: Button
 var _pause_icon: Control
+var _pause_scrim: ColorRect
 var _paused_state: bool = false
-var _speed_btn: Button
+var _speed_label: Label
 
 var _bestiary: Bestiary
 var _inspector: Inspector
 var _settings_panel: Control
+var _settings_tabs: TabContainer
 var _slots_label: Label
 var _slots_title: Label
+var _board_label: Label
+
+## Labels whose colour comes from the palette rather than a fixed value, and the
+## procedurally-drawn glyphs that read Settings.scheme() at draw time. Both are
+## refreshed by _apply_scheme() when the player picks a new palette.
+var _accent_labels: Array[Label] = []
+var _dim_labels: Array[Label] = []
+var _themed_icons: Array[Control] = []
+var _scheme_buttons: Array[Button] = []
 
 var _wave_index: int = 0
 var _preview_cost: int = 0
@@ -43,15 +55,23 @@ var _roster_box: VBoxContainer
 var _roster_rows: Dictionary = {}   ## instance_id -> {"btn": Button, "unit": Node}
 var _roster_sig: String = ""
 var _roster_balance: Label
+var _gems_label: Label
 
 var _store_panel: Control
 var _store_box: VBoxContainer
 var _store_balance: Label
+var _store_souls_label: Label
+var _store_gems_label: Label
+
+## Which creature stands for the Bestiary. One glyph only — change this number to
+## swap it. 0 = horned skull, 1 = goblin, 2 = dragon.
+const BESTIARY_GLYPH := 0
 
 
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	_build()
+	_apply_scheme()
 
 
 func _process(delta: float) -> void:
@@ -69,6 +89,17 @@ func _build() -> void:
 	_root.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	add_child(_root)
 
+	## Dims the DUNGEON while paused so a paused game reads as paused at a glance,
+	## not just from one line of text. Added FIRST so every HUD element still draws
+	## at full brightness on top of it — only the board behind the layer goes dark,
+	## and it stays visible through the scrim rather than being covered.
+	_pause_scrim = ColorRect.new()
+	_pause_scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_pause_scrim.color = Color(0.0, 0.0, 0.0, 0.45)
+	_pause_scrim.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_pause_scrim.visible = false
+	_root.add_child(_pause_scrim)
+
 	var controls := HBoxContainer.new()
 	controls.set_anchors_preset(Control.PRESET_TOP_RIGHT)
 	controls.offset_left = -530
@@ -81,7 +112,7 @@ func _build() -> void:
 
 	_unleash_btn = Button.new()
 	_unleash_btn.custom_minimum_size = Vector2(110, 44)
-	_unleash_btn.text = "UNLEASH"
+	_unleash_btn.text = "START"
 	_unleash_btn.pressed.connect(func(): unleash_pressed.emit())
 	controls.add_child(_unleash_btn)
 
@@ -95,6 +126,7 @@ func _build() -> void:
 	shop_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	shop_icon.draw.connect(_draw_present_icon.bind(shop_icon))
 	shop_btn.add_child(shop_icon)
+	_themed_icons.append(shop_icon)
 
 	var gear_btn := Button.new()
 	gear_btn.custom_minimum_size = Vector2(44, 44)
@@ -106,26 +138,30 @@ func _build() -> void:
 	gear_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	gear_icon.draw.connect(_draw_gear_icon.bind(gear_icon))
 	gear_btn.add_child(gear_icon)
+	_themed_icons.append(gear_icon)
 
-	var board_btn := Button.new()
-	board_btn.custom_minimum_size = Vector2(44, 44)
-	board_btn.text = ">>"
-	board_btn.tooltip_text = "Switch board"
-	board_btn.pressed.connect(func(): switch_board_pressed.emit())
-	controls.add_child(board_btn)
+	controls.add_child(_bestiary_button(BESTIARY_GLYPH, "Bestiary"))
 
-	var info_btn := Button.new()
-	info_btn.custom_minimum_size = Vector2(44, 44)
-	info_btn.text = "?"
-	info_btn.tooltip_text = "Bestiary"
-	info_btn.pressed.connect(func(): _bestiary.toggle(_wave_index))
-	controls.add_child(info_btn)
+	## Speed picker: 1x / 2x / 3x. Clamps at both ends rather than wrapping, so
+	## holding the arrow can't drop you from 3x back to 1x mid-wave.
+	var speed_spin := HBoxContainer.new()
+	speed_spin.add_theme_constant_override("separation", 2)
+	controls.add_child(speed_spin)
 
-	_speed_btn = Button.new()
-	_speed_btn.custom_minimum_size = Vector2(56, 44)
-	_speed_btn.text = "1x"
-	_speed_btn.pressed.connect(func(): speed_pressed.emit())
-	controls.add_child(_speed_btn)
+	_speed_label = Label.new()
+	_speed_label.custom_minimum_size = Vector2(30, 44)
+	_speed_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_speed_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_speed_label.add_theme_font_size_override("font_size", 18)
+	_speed_label.text = "1x"
+	_speed_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	speed_spin.add_child(_speed_label)
+
+	var speed_arrows := VBoxContainer.new()
+	speed_arrows.add_theme_constant_override("separation", 2)
+	speed_spin.add_child(speed_arrows)
+	speed_arrows.add_child(_arrow_button(true, "Faster", _step_speed))
+	speed_arrows.add_child(_arrow_button(false, "Slower", _step_speed))
 
 	_pause_btn = Button.new()
 	_pause_btn.custom_minimum_size = Vector2(48, 44)
@@ -137,29 +173,72 @@ func _build() -> void:
 	_pause_icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_pause_icon.draw.connect(_draw_pause_icon.bind(_pause_icon))
 	_pause_btn.add_child(_pause_icon)
+	_themed_icons.append(_pause_icon)
+
+	## Board picker: the number is the board you're on, arrows step through the
+	## ones we have. Wraps at both ends, so you can browse in either direction.
+	## Sits bottom-left, just ahead of the hoard bar.
+	var board_spin := HBoxContainer.new()
+	board_spin.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
+	board_spin.offset_left = 12
+	board_spin.offset_right = 66
+	board_spin.offset_top = -62
+	board_spin.offset_bottom = -18
+	board_spin.add_theme_constant_override("separation", 2)
+	_root.add_child(board_spin)
+
+	_board_label = Label.new()
+	_board_label.custom_minimum_size = Vector2(28, 44)
+	_board_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_board_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	_board_label.add_theme_font_size_override("font_size", 20)
+	_board_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	board_spin.add_child(_board_label)
+
+	var arrows := VBoxContainer.new()
+	arrows.add_theme_constant_override("separation", 2)
+	board_spin.add_child(arrows)
+	arrows.add_child(_arrow_button(true, "Next board", _step_board))
+	arrows.add_child(_arrow_button(false, "Previous board", _step_board))
+
+	_refresh_board_label()
 
 	_hoard_bar = Control.new()
 	_hoard_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
-	_hoard_bar.offset_left = 12
-	_hoard_bar.offset_right = -380   ## leave the bottom-right for the trap tray
+	_hoard_bar.offset_left = 78          ## clear of the board picker to its left
+	_hoard_bar.offset_right = -470   ## leave the bottom-right for the trap tray
 	_hoard_bar.offset_top = -68
 	_hoard_bar.offset_bottom = -12
 	_hoard_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	_hoard_bar.draw.connect(_draw_hoard_bar)
 	_root.add_child(_hoard_bar)
 
+	## Primary status line and the toast under it both track the palette — the
+	## colors passed here are only what shows before _apply_scheme() first runs.
 	_wave_label = _label(20, 18, 19, Color(0.9, 0.9, 0.9))
+	_accent_labels.append(_wave_label)
 	_toast = _label(20, 70, 18, Color(1.0, 0.85, 0.3))
+	_accent_labels.append(_toast)
 
 	_build_roster_panel()
 
-	_msg_label = Label.new()
-	_msg_label.set_anchors_preset(Control.PRESET_FULL_RECT)
-	_msg_label.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_msg_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	_msg_label.add_theme_font_size_override("font_size", 40)
+	## Centre-screen banner. A RichTextLabel rather than a Label so one message can
+	## carry more than one colour — the win summary greens the Gold you kept and
+	## reds what walked out. RichTextLabel can't centre itself vertically, hence
+	## the CenterContainer wrapper.
+	var msg_holder := CenterContainer.new()
+	msg_holder.set_anchors_preset(Control.PRESET_FULL_RECT)
+	msg_holder.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_root.add_child(msg_holder)
+
+	_msg_label = RichTextLabel.new()
+	_msg_label.bbcode_enabled = true
+	_msg_label.fit_content = true
+	_msg_label.scroll_active = false
+	_msg_label.autowrap_mode = TextServer.AUTOWRAP_OFF
+	_msg_label.add_theme_font_size_override("normal_font_size", 40)
 	_msg_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	_root.add_child(_msg_label)
+	msg_holder.add_child(_msg_label)
 
 	_inspector = Inspector.new()
 	_inspector.set_anchors_preset(Control.PRESET_BOTTOM_LEFT)
@@ -167,6 +246,8 @@ func _build() -> void:
 	_inspector.offset_right = 280
 	_inspector.offset_top = -300
 	_inspector.offset_bottom = -72   ## sit just above the bottom-left hoard bar
+	## Relay the inspector's Sell up to main, which owns the economy and build slots.
+	_inspector.sell_requested.connect(func(trap): trap_sell_pressed.emit(trap))
 	_root.add_child(_inspector)
 
 	_build_settings_panel()
@@ -182,6 +263,9 @@ func _build() -> void:
 	row.offset_top = -66
 	row.offset_bottom = -8
 	row.alignment = BoxContainer.ALIGNMENT_END   ## trap menu + UNLEASH sit bottom-right
+	## Spans the full bottom strip but only fills the right end. Without IGNORE the
+	## empty left half still swallows clicks meant for the board picker beneath it.
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_theme_constant_override("separation", 8)
 	_root.add_child(row)
 
@@ -193,7 +277,7 @@ func _build() -> void:
 		var id: String = key
 		var d: TrapData = GameData.traps[id]
 		var b := Button.new()
-		b.custom_minimum_size = Vector2(64, 58)
+		b.custom_minimum_size = Vector2(58, 58)
 		b.toggle_mode = true
 		b.tooltip_text = "%s — %s" % [d.display_name, d.flavor]
 		b.set_meta("trap_id", id)
@@ -225,12 +309,28 @@ func _build() -> void:
 			icon.draw.connect(_draw_trap_icon.bind(icon, d))
 			col.add_child(icon)
 
+		## Cost as the number and the gold coin, centred under the trap glyph — the
+		## same coin the Store uses. Registered so it repaints on a scheme change.
+		var cost_row := HBoxContainer.new()
+		cost_row.alignment = BoxContainer.ALIGNMENT_CENTER
+		cost_row.add_theme_constant_override("separation", 2)
+		cost_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(cost_row)
+
 		var cost := Label.new()
-		cost.text = "%dg" % d.cost
-		cost.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		cost.text = str(d.cost)
 		cost.add_theme_font_size_override("font_size", 12)
+		cost.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 		cost.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		col.add_child(cost)
+		cost_row.add_child(cost)
+
+		var coin := Control.new()
+		coin.custom_minimum_size = Vector2(14, 14)
+		coin.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+		coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		coin.draw.connect(_draw_gold_icon.bind(coin))
+		cost_row.add_child(coin)
+		_themed_icons.append(coin)
 
 		_tray.add_child(b)
 
@@ -256,15 +356,19 @@ func _build_roster_panel() -> void:
 	var title := Label.new()
 	title.text = "ANTI-HEROES"
 	title.add_theme_font_size_override("font_size", 14)
-	title.add_theme_color_override("font_color", Color(0.85, 0.55, 0.8))
 	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	vb.add_child(title)
+	_accent_labels.append(title)
 
-	_roster_balance = Label.new()
-	_roster_balance.add_theme_font_size_override("font_size", 12)
-	_roster_balance.add_theme_color_override("font_color", Color(0.75, 0.75, 0.6))
-	_roster_balance.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	vb.add_child(_roster_balance)
+	## Souls and Gems as glyph+count pairs — no words. Both track the ANTI-HEROES
+	## heading colour, and both glyphs persist (this panel is built once and lives
+	## for the session, so they need repainting when the scheme changes).
+	var bal_row := HBoxContainer.new()
+	bal_row.add_theme_constant_override("separation", 12)
+	bal_row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	vb.add_child(bal_row)
+	_roster_balance = _balance_group(bal_row, _draw_soul_icon, 12, true, true)
+	_gems_label = _balance_group(bal_row, _draw_gem_icon, 12, true, true)
 
 	## Scrollable list, so a long roster scrolls instead of overflowing.
 	var scroll := ScrollContainer.new()
@@ -288,7 +392,9 @@ func _update_roster(selected) -> void:
 	if _roster_box == null:
 		return
 	if _roster_balance != null:
-		_roster_balance.text = "Souls %d   Gems %d" % [Bank.souls, Bank.gems]
+		_roster_balance.text = str(Bank.souls)
+	if _gems_label != null:
+		_gems_label.text = str(Bank.gems)
 	var units: Array = []
 	for n in get_tree().get_nodes_in_group("minions"):
 		if is_instance_valid(n):
@@ -376,7 +482,11 @@ func _toggle_store() -> void:
 
 func _update_store_balance() -> void:
 	if _store_balance != null:
-		_store_balance.text = "Gold %d      Souls %d      Gems %d" % [EconomySystem.hoard, Bank.souls, Bank.gems]
+		_store_balance.text = str(EconomySystem.hoard)
+	if _store_souls_label != null:
+		_store_souls_label.text = str(Bank.souls)
+	if _store_gems_label != null:
+		_store_gems_label.text = str(Bank.gems)
 
 
 ## Rebuild the whole store: recruit rows reflect current ownership/affordability,
@@ -391,13 +501,19 @@ func refresh_store() -> void:
 	title.text = "STORE"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 24)
-	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25))
+	title.add_theme_color_override("font_color", Settings.scheme().accent)
 	_store_box.add_child(title)
 
-	_store_balance = Label.new()
-	_store_balance.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	_store_balance.add_theme_font_size_override("font_size", 15)
-	_store_box.add_child(_store_balance)
+	## Gold, Souls, Gems as glyph+count pairs, centred as one group. These icons are
+	## thrown away and rebuilt every time the store opens, so they draw with the
+	## live accent and skip _themed_icons registration.
+	var bal_row := HBoxContainer.new()
+	bal_row.add_theme_constant_override("separation", 12)
+	bal_row.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	_store_box.add_child(bal_row)
+	_store_balance = _balance_group(bal_row, _draw_gold_icon, 15, false, false)
+	_store_souls_label = _balance_group(bal_row, _draw_soul_icon, 15, false, false)
+	_store_gems_label = _balance_group(bal_row, _draw_gem_icon, 15, false, false)
 	_update_store_balance()
 
 	_store_box.add_child(_section_header("Recruit Anti-Heroes"))
@@ -418,40 +534,39 @@ func refresh_store() -> void:
 			lbl.custom_minimum_size = Vector2(150, 0)
 			lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 			row.add_child(lbl)
-			var sbtn := Button.new()
-			sbtn.text = "%d souls" % d.recruit_souls
-			sbtn.disabled = not Bank.can_afford_souls(d.recruit_souls)
+			var sbtn := _icon_button(["%d" % d.recruit_souls, _draw_soul_icon],
+					not Bank.can_afford_souls(d.recruit_souls))
 			sbtn.pressed.connect(store_recruit.emit.bind(id, "souls"))
 			row.add_child(sbtn)
-			var gbtn := Button.new()
-			gbtn.text = "%d gems" % d.recruit_gems
-			gbtn.disabled = not Bank.can_afford_gems(d.recruit_gems)
+			var gbtn := _icon_button(["%d" % d.recruit_gems, _draw_gem_icon],
+					not Bank.can_afford_gems(d.recruit_gems))
 			gbtn.pressed.connect(store_recruit.emit.bind(id, "gems"))
 			row.add_child(gbtn)
 			_store_box.add_child(row)
 
 	_store_box.add_child(_section_header("Spend Gems"))
-	var goldbtn := Button.new()
-	goldbtn.text = "+%d Gold  —  %d gems" % [Bank.GOLD_REFILL, Bank.GEM_GOLD_COST]
-	goldbtn.disabled = not Bank.can_afford_gems(Bank.GEM_GOLD_COST)
+	## "+250 [coin]  —  8 [gem]": buy Gold with Gems. Both amounts are glyphs.
+	var goldbtn := _icon_button(["+%d" % Bank.GOLD_REFILL, _draw_gold_icon,
+			"  —  %d" % Bank.GEM_GOLD_COST, _draw_gem_icon],
+			not Bank.can_afford_gems(Bank.GEM_GOLD_COST))
 	goldbtn.pressed.connect(store_buy_gold.emit)
 	_store_box.add_child(goldbtn)
-	var soulbtn := Button.new()
-	soulbtn.text = "+%d Souls  —  %d gems" % [Bank.SOULS_PACK, Bank.GEM_SOULS_COST]
-	soulbtn.disabled = not Bank.can_afford_gems(Bank.GEM_SOULS_COST)
+	var soulbtn := _icon_button(["+%d" % Bank.SOULS_PACK, _draw_soul_icon,
+			"  —  %d" % Bank.GEM_SOULS_COST, _draw_gem_icon],
+			not Bank.can_afford_gems(Bank.GEM_SOULS_COST))
 	soulbtn.pressed.connect(store_buy_souls.emit)
 	_store_box.add_child(soulbtn)
 
 	_store_box.add_child(_section_header("Get Gems"))
-	var adbtn := Button.new()
-	adbtn.text = "Watch Ad  —  +%d Gems" % Bank.AD_REWARD_GEMS
+	## Gems as the REWARD here, not a price — the ad's amount ends the line, the
+	## packs' amount sits mid-line before the money price.
+	var adbtn := _icon_button(["Watch Ad  —  +%d" % Bank.AD_REWARD_GEMS, _draw_gem_icon], false)
 	adbtn.pressed.connect(store_watch_ad.emit)
 	_store_box.add_child(adbtn)
 	for pack_key in Bank.GEM_PACKS.keys():
 		var pack_id: String = pack_key
 		var pack: Dictionary = Bank.GEM_PACKS[pack_id]
-		var pbtn := Button.new()
-		pbtn.text = "%d Gems  —  %s" % [int(pack["gems"]), pack["price"]]
+		var pbtn := _icon_button(["%d" % int(pack["gems"]), _draw_gem_icon, "  —  %s" % pack["price"]], false)
 		pbtn.pressed.connect(store_get_pack.emit.bind(pack_id))
 		_store_box.add_child(pbtn)
 
@@ -459,7 +574,7 @@ func refresh_store() -> void:
 	note.text = "Purchases and ads are stubbed for testing — no real charge."
 	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	note.add_theme_font_size_override("font_size", 11)
-	note.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
+	note.add_theme_color_override("font_color", Settings.scheme().dim)
 	note.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	_store_box.add_child(note)
 
@@ -470,11 +585,85 @@ func refresh_store() -> void:
 	_store_box.add_child(close)
 
 
+## Build a store button from an ordered mix of text and currency glyphs. A String
+## segment becomes a label; a Callable segment becomes a small icon drawn by that
+## handler (_draw_gold_icon / _draw_soul_icon / _draw_gem_icon). Lets one button
+## read "+100 [soul]  —  8 [gem]". Content rides inside the button with the mouse
+## ignored, so the whole thing stays one tap target — the same trick the trap tray
+## and roster rows use.
+func _icon_button(segments: Array, disabled: bool) -> Button:
+	var b := Button.new()
+	b.custom_minimum_size = Vector2(0, 34)
+	b.disabled = disabled
+
+	var row := HBoxContainer.new()
+	row.set_anchors_preset(Control.PRESET_FULL_RECT)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 3)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	## Child Labels can't read the Button's disabled font colour, so dim the whole
+	## row (text + glyphs) to match a greyed-out button.
+	if disabled:
+		row.modulate = Color(1.0, 1.0, 1.0, 0.4)
+	b.add_child(row)
+
+	for seg in segments:
+		if seg is String:
+			row.add_child(_icon_button_label(seg))
+		else:
+			var ic := Control.new()
+			ic.custom_minimum_size = Vector2(14, 16)
+			ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+			ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+			ic.draw.connect((seg as Callable).bind(ic))
+			row.add_child(ic)
+	return b
+
+
+func _icon_button_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	l.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	return l
+
+
+## A [glyph][count] pair for the balance readouts. `draw_fn` is the glyph's draw
+## handler; `font` sizes the count; `accent` makes the count follow the accent
+## palette (roster) rather than the default text colour (store); `persist` adds
+## the glyph to _themed_icons so a long-lived panel repaints on a scheme change —
+## the store rebuilds itself each open, so it passes false. Returns the count
+## Label for the caller to keep updating.
+func _balance_group(parent: Control, draw_fn: Callable, font: int, accent: bool, persist: bool) -> Label:
+	var g := HBoxContainer.new()
+	g.add_theme_constant_override("separation", 3)
+	g.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	parent.add_child(g)
+
+	var ic := Control.new()
+	ic.custom_minimum_size = Vector2(14, 16)
+	ic.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	ic.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	ic.draw.connect(draw_fn.bind(ic))
+	g.add_child(ic)
+	if persist:
+		_themed_icons.append(ic)
+
+	var lbl := Label.new()
+	lbl.add_theme_font_size_override("font_size", font)
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	g.add_child(lbl)
+	if accent:
+		_accent_labels.append(lbl)
+	return lbl
+
+
 func _section_header(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.add_theme_font_size_override("font_size", 16)
-	l.add_theme_color_override("font_color", Color(0.85, 0.55, 0.8))
+	l.add_theme_color_override("font_color", Settings.scheme().accent)
 	return l
 
 
@@ -482,11 +671,13 @@ func _info_row(text: String) -> Label:
 	var l := Label.new()
 	l.text = text
 	l.add_theme_font_size_override("font_size", 13)
-	l.add_theme_color_override("font_color", Color(0.7, 0.7, 0.7))
+	l.add_theme_color_override("font_color", Settings.scheme().dim)
 	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	return l
 
 
+## Modal settings, split into tabs. Each tab is one VBoxContainer whose NODE NAME
+## becomes the tab title — add a tab by adding a child here.
 func _build_settings_panel() -> void:
 	_settings_panel = Control.new()
 	_settings_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
@@ -502,31 +693,61 @@ func _build_settings_panel() -> void:
 				_toggle_settings())
 	_settings_panel.add_child(scrim)
 
+	var frame := PanelContainer.new()
+	frame.set_anchors_preset(Control.PRESET_CENTER)
+	frame.offset_left = -240
+	frame.offset_right = 240
+	frame.offset_top = -250
+	frame.offset_bottom = 250
+	_settings_panel.add_child(frame)
+
 	var box := VBoxContainer.new()
-	box.set_anchors_preset(Control.PRESET_CENTER)
-	box.offset_left = -170
-	box.offset_right = 170
-	box.offset_top = -110
-	box.offset_bottom = 110
-	box.add_theme_constant_override("separation", 14)
-	_settings_panel.add_child(box)
+	box.add_theme_constant_override("separation", 10)
+	frame.add_child(box)
 
 	var title := Label.new()
 	title.text = "SETTINGS"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	title.add_theme_font_size_override("font_size", 24)
-	title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25))
 	box.add_child(title)
+	_accent_labels.append(title)
+
+	_settings_tabs = TabContainer.new()
+	_settings_tabs.custom_minimum_size = Vector2(450, 390)
+	_settings_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	box.add_child(_settings_tabs)
+
+	_settings_tabs.add_child(_build_board_tab())
+	_settings_tabs.add_child(_build_appearance_tab())
+
+	var done := Button.new()
+	done.text = "DONE"
+	done.custom_minimum_size = Vector2(0, 44)
+	done.pressed.connect(_toggle_settings)
+	box.add_child(done)
+
+	_refresh_slots_label()
+
+
+## Tab 1 — per-board build settings.
+func _build_board_tab() -> Control:
+	var tab := VBoxContainer.new()
+	tab.name = "Board"
+	tab.add_theme_constant_override("separation", 14)
+
+	var spacer := Control.new()
+	spacer.custom_minimum_size = Vector2(0, 12)
+	tab.add_child(spacer)
 
 	_slots_title = Label.new()
 	_slots_title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	_slots_title.add_theme_font_size_override("font_size", 16)
-	box.add_child(_slots_title)
+	tab.add_child(_slots_title)
 
 	var row := HBoxContainer.new()
 	row.alignment = BoxContainer.ALIGNMENT_CENTER
 	row.add_theme_constant_override("separation", 16)
-	box.add_child(row)
+	tab.add_child(row)
 
 	var minus := Button.new()
 	minus.text = "-"
@@ -547,26 +768,179 @@ func _build_settings_panel() -> void:
 	plus.pressed.connect(func(): _nudge_slots(1))
 	row.add_child(plus)
 
-	var note := Label.new()
-	note.text = "Saved automatically. Applies on this board now."
-	note.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	note.add_theme_font_size_override("font_size", 12)
-	note.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
-	box.add_child(note)
+	tab.add_child(_note_label("Saved automatically. Applies on this board now."))
+	return tab
 
-	var done := Button.new()
-	done.text = "DONE"
-	done.custom_minimum_size = Vector2(0, 48)
-	done.pressed.connect(_toggle_settings)
-	box.add_child(done)
 
-	_refresh_slots_label()
+## Tab 2 — palette picker. One toggle per ColorScheme, showing the palette's own
+## colors as a swatch strip so you can see the scheme before you commit to it.
+func _build_appearance_tab() -> Control:
+	var tab := VBoxContainer.new()
+	tab.name = "Appearance"
+	tab.add_theme_constant_override("separation", 8)
+
+	var heading := Label.new()
+	heading.text = "Color scheme"
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	heading.add_theme_font_size_override("font_size", 16)
+	tab.add_child(heading)
+
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tab.add_child(scroll)
+
+	var grid := GridContainer.new()
+	grid.columns = 2
+	grid.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	grid.add_theme_constant_override("h_separation", 8)
+	grid.add_theme_constant_override("v_separation", 8)
+	scroll.add_child(grid)
+
+	## One ButtonGroup keeps the picker single-choice — selecting a scheme
+	## releases the previous one for free.
+	var group := ButtonGroup.new()
+	_scheme_buttons.clear()
+	for i in ColorScheme.count():
+		var s: ColorScheme = ColorScheme.get_scheme(i)
+		var btn := Button.new()
+		btn.toggle_mode = true
+		btn.button_group = group
+		btn.custom_minimum_size = Vector2(200, 66)
+		btn.tooltip_text = s.display_name
+		btn.pressed.connect(_on_scheme_picked.bind(i))
+
+		var col := VBoxContainer.new()
+		col.set_anchors_preset(Control.PRESET_FULL_RECT)
+		col.offset_left = 6
+		col.offset_right = -6
+		col.offset_top = 6
+		col.offset_bottom = -6
+		col.add_theme_constant_override("separation", 4)
+		col.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		btn.add_child(col)
+
+		var swatch := Control.new()
+		swatch.custom_minimum_size = Vector2(0, 20)
+		swatch.size_flags_vertical = Control.SIZE_EXPAND_FILL
+		swatch.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		swatch.draw.connect(_draw_swatch.bind(swatch, s))
+		col.add_child(swatch)
+
+		var name_lbl := Label.new()
+		name_lbl.text = s.display_name
+		name_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+		name_lbl.add_theme_font_size_override("font_size", 13)
+		name_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		col.add_child(name_lbl)
+
+		grid.add_child(btn)
+		_scheme_buttons.append(btn)
+
+	tab.add_child(_note_label("Repaints the dungeon and the HUD. Saved automatically."))
+	return tab
+
+
+## The palette's four defining colors as vertical bars — accent, stone, floor, panel.
+func _draw_swatch(swatch: Control, s: ColorScheme) -> void:
+	var bars: Array[Color] = [s.accent, s.stone, s.floor_col, s.panel]
+	var w: float = swatch.size.x / float(bars.size())
+	for i in bars.size():
+		swatch.draw_rect(Rect2(Vector2(w * float(i), 0.0), Vector2(w, swatch.size.y)), bars[i])
+	swatch.draw_rect(Rect2(Vector2.ZERO, swatch.size), s.text, false, 1.0)
+
+
+func _note_label(text: String) -> Label:
+	var l := Label.new()
+	l.text = text
+	l.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	l.add_theme_font_size_override("font_size", 12)
+	l.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	_dim_labels.append(l)
+	return l
+
+
+func _on_scheme_picked(index: int) -> void:
+	Settings.set_color_scheme(index)
+	_apply_scheme()
+
+
+## Rebuild the UI Theme from the active palette and repaint everything that
+## caches a color. The board repaints itself — it reads Settings.scheme() live.
+func _apply_scheme() -> void:
+	var s: ColorScheme = Settings.scheme()
+	_root.theme = _make_theme(s)
+	for l in _accent_labels:
+		if is_instance_valid(l):
+			l.add_theme_color_override("font_color", s.accent)
+	for l in _dim_labels:
+		if is_instance_valid(l):
+			l.add_theme_color_override("font_color", s.dim)
+	for icon in _themed_icons:
+		if is_instance_valid(icon):
+			icon.queue_redraw()
+	for i in _scheme_buttons.size():
+		if is_instance_valid(_scheme_buttons[i]):
+			_scheme_buttons[i].button_pressed = (i == Settings.get_color_scheme())
+	## RichTextLabel reads "default_color", not the Theme's Label font_color, so the
+	## banner needs its own override to follow the palette.
+	if _msg_label != null:
+		_msg_label.add_theme_color_override("default_color", s.text)
+	if _hoard_bar != null:
+		_hoard_bar.queue_redraw()
+	if _store_panel != null and _store_panel.visible:
+		refresh_store()
+
+
+func _make_theme(s: ColorScheme) -> Theme:
+	var t := Theme.new()
+
+	t.set_stylebox("normal", "Button", _flat(s.button, s.accent.darkened(0.55)))
+	t.set_stylebox("hover", "Button", _flat(s.button_hover, s.accent))
+	t.set_stylebox("pressed", "Button", _flat(s.button_pressed, s.accent))
+	t.set_stylebox("disabled", "Button", _flat(s.panel.lerp(s.button, 0.4), s.panel))
+	t.set_stylebox("focus", "Button", StyleBoxEmpty.new())
+	t.set_color("font_color", "Button", s.text)
+	t.set_color("font_hover_color", "Button", s.text)
+	t.set_color("font_pressed_color", "Button", s.panel)
+	t.set_color("font_focus_color", "Button", s.text)
+	t.set_color("font_disabled_color", "Button", s.dim)
+
+	t.set_color("font_color", "Label", s.text)
+	t.set_stylebox("panel", "PanelContainer", _flat(s.panel, s.accent.darkened(0.45), 12.0))
+	t.set_stylebox("panel", "ScrollContainer", StyleBoxEmpty.new())
+
+	t.set_stylebox("panel", "TabContainer", _flat(s.panel.lerp(s.button, 0.5), s.accent.darkened(0.6), 8.0))
+	t.set_stylebox("tabbar_background", "TabContainer", StyleBoxEmpty.new())
+	t.set_stylebox("tab_selected", "TabContainer", _flat(s.panel.lerp(s.button, 0.5), s.accent, 8.0))
+	t.set_stylebox("tab_unselected", "TabContainer", _flat(s.panel, s.accent.darkened(0.7), 8.0))
+	t.set_stylebox("tab_hovered", "TabContainer", _flat(s.button_hover, s.accent, 8.0))
+	t.set_color("font_selected_color", "TabContainer", s.accent)
+	t.set_color("font_unselected_color", "TabContainer", s.dim)
+	t.set_color("font_hovered_color", "TabContainer", s.text)
+	return t
+
+
+func _flat(fill: Color, border: Color, radius: float = 6.0) -> StyleBoxFlat:
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = fill
+	sb.border_color = border
+	sb.set_border_width_all(2)
+	sb.set_corner_radius_all(int(radius))
+	sb.content_margin_left = 10.0
+	sb.content_margin_right = 10.0
+	sb.content_margin_top = 6.0
+	sb.content_margin_bottom = 6.0
+	return sb
 
 
 func _toggle_settings() -> void:
 	_settings_panel.visible = not _settings_panel.visible
 	if _settings_panel.visible:
 		_refresh_slots_label()
+		for i in _scheme_buttons.size():
+			if is_instance_valid(_scheme_buttons[i]):
+				_scheme_buttons[i].button_pressed = (i == Settings.get_color_scheme())
 
 
 func _nudge_slots(delta: int) -> void:
@@ -582,6 +956,53 @@ func _refresh_slots_label() -> void:
 		_slots_label.text = str(Settings.get_trap_slots(board))
 	if _slots_title:
 		_slots_title.text = "Trap locations on %s" % board
+
+
+## One half of a spinner. `on_step` is called with +1 (up) or -1 (down).
+func _arrow_button(up: bool, tip: String, on_step: Callable) -> Button:
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(24, 21)
+	btn.tooltip_text = tip
+	btn.pressed.connect(func(): on_step.call(1 if up else -1))
+	var icon := Control.new()
+	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.draw.connect(_draw_arrow_icon.bind(icon, up))
+	btn.add_child(icon)
+	_themed_icons.append(icon)
+	return btn
+
+
+func _step_speed(delta: int) -> void:
+	speed_step_pressed.emit(delta)
+
+
+func _step_board(delta: int) -> void:
+	board_step_pressed.emit(delta)
+	## Emission is synchronous — the board has already changed by now.
+	_refresh_board_label()
+	_refresh_slots_label()
+
+
+func _refresh_board_label() -> void:
+	if _board_label == null:
+		return
+	_board_label.text = str(GameData.active_board + 1)
+	_board_label.tooltip_text = "Board %d of %d — %s" % [
+		GameData.active_board + 1, GameData.board_count(), GameData.board()["name"]
+	]
+
+
+## Spinner glyph: a small solid triangle, pointing up for next, down for previous.
+func _draw_arrow_icon(icon: Control, up: bool) -> void:
+	var ctr := icon.size * 0.5
+	var col := Settings.scheme().text
+	var w := 5.0
+	var h := 3.5
+	var dy := -h if up else h
+	icon.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-w, -dy), ctr + Vector2(w, -dy), ctr + Vector2(0.0, dy),
+	]), col)
 
 
 func _label(x: float, y: float, size: int, col: Color) -> Label:
@@ -609,18 +1030,115 @@ func say(text: String) -> void:
 	_toast_timer = 2.2
 
 
-func set_controls(paused: bool, fast: bool) -> void:
+func set_controls(paused: bool, speed: int) -> void:
 	_paused_state = paused
+	if _pause_scrim != null:
+		_pause_scrim.visible = paused
 	if _pause_icon != null:
 		_pause_icon.queue_redraw()
-	_speed_btn.text = "2x" if fast else "1x"
+	if _speed_label != null:
+		_speed_label.text = "%dx" % speed
+
+
+func _bestiary_button(variant: int, tip: String) -> Button:
+	var btn := Button.new()
+	btn.custom_minimum_size = Vector2(44, 44)
+	btn.tooltip_text = tip
+	btn.pressed.connect(func(): _bestiary.toggle(_wave_index))
+	var icon := Control.new()
+	icon.set_anchors_preset(Control.PRESET_FULL_RECT)
+	icon.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	icon.draw.connect(_draw_beast_icon.bind(icon, variant))
+	btn.add_child(icon)
+	_themed_icons.append(icon)
+	return btn
+
+
+func _draw_beast_icon(icon: Control, variant: int) -> void:
+	match variant:
+		0: _draw_skull_icon(icon)
+		1: _draw_goblin_icon(icon)
+		_: _draw_dragon_icon(icon)
+
+
+## A — horned skull. The monster-manual read: this is a book of dead things.
+func _draw_skull_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var bone := Settings.scheme().text
+	var dark := Settings.scheme().panel
+	for s: float in [-1.0, 1.0]:
+		icon.draw_colored_polygon(PackedVector2Array([
+			ctr + Vector2(6.0 * s, -4.0),
+			ctr + Vector2(11.5 * s, -12.0),
+			ctr + Vector2(6.5 * s, -9.0),
+		]), bone)
+	icon.draw_circle(ctr + Vector2(0.0, -1.5), 7.2, bone)
+	icon.draw_rect(Rect2(ctr + Vector2(-4.0, 3.0), Vector2(8.0, 5.5)), bone)
+	icon.draw_circle(ctr + Vector2(-2.9, -2.2), 2.3, dark)
+	icon.draw_circle(ctr + Vector2(2.9, -2.2), 2.3, dark)
+	icon.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(0.0, 0.4), ctr + Vector2(-1.5, 3.0), ctr + Vector2(1.5, 3.0),
+	]), dark)
+	for i in 3:
+		icon.draw_rect(Rect2(ctr + Vector2(-3.4 + 2.4 * float(i), 4.4), Vector2(1.1, 4.0)), dark)
+
+
+## B — goblin. Ties the icon to the ally you actually field (the Goblin Pack).
+func _draw_goblin_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var skin := Color(0.52, 0.82, 0.40)
+	var dark := Color(0.08, 0.14, 0.08)
+	for s: float in [-1.0, 1.0]:
+		icon.draw_colored_polygon(PackedVector2Array([
+			ctr + Vector2(5.0 * s, -3.5),
+			ctr + Vector2(13.0 * s, -7.0),
+			ctr + Vector2(5.5 * s, 2.0),
+		]), skin)
+	icon.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-7.0, -7.0), ctr + Vector2(7.0, -7.0),
+		ctr + Vector2(4.5, 5.5), ctr + Vector2(0.0, 9.5), ctr + Vector2(-4.5, 5.5),
+	]), skin)
+	icon.draw_circle(ctr + Vector2(-3.0, -2.4), 1.9, dark)
+	icon.draw_circle(ctr + Vector2(3.0, -2.4), 1.9, dark)
+	icon.draw_line(ctr + Vector2(-3.4, 2.8), ctr + Vector2(3.4, 2.8), dark, 1.6)
+	for i in 3:
+		icon.draw_rect(Rect2(ctr + Vector2(-2.6 + 2.2 * float(i), 2.8), Vector2(1.0, 2.2)), dark)
+
+
+## C — dragon. Nods to the Allure "Dragon" playstyle: sit on gold, let it come.
+func _draw_dragon_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var hide := Color(0.86, 0.30, 0.34)
+	var dark := Color(0.12, 0.07, 0.09)
+	var fang := Color(0.97, 0.95, 0.90)
+	## Swept-back horn, kept clear of the skull so the silhouette stays readable.
+	icon.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-4.0, -5.5), ctr + Vector2(-13.0, -10.5), ctr + Vector2(-5.5, -2.5),
+	]), hide)
+	## Skull and snout, facing right.
+	icon.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-6.5, -5.0), ctr + Vector2(2.0, -6.5), ctr + Vector2(11.5, -1.5),
+		ctr + Vector2(11.0, 1.0), ctr + Vector2(-1.0, 1.5), ctr + Vector2(-6.5, -0.5),
+	]), hide)
+	## Lower jaw, with a deliberate gap above it — that gap is the open maw.
+	icon.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-3.5, 3.5), ctr + Vector2(9.5, 3.0), ctr + Vector2(-0.5, 7.5),
+	]), hide)
+	## Fangs hang from the upper jaw into the gap.
+	for i in 3:
+		var x := 2.0 + 3.0 * float(i)
+		icon.draw_colored_polygon(PackedVector2Array([
+			ctr + Vector2(x, 1.2), ctr + Vector2(x + 1.7, 1.2), ctr + Vector2(x + 0.85, 3.4),
+		]), fang)
+	icon.draw_circle(ctr + Vector2(-1.5, -2.6), 1.7, dark)
+	icon.draw_circle(ctr + Vector2(9.0, -1.2), 0.9, dark)
 
 
 ## Store glyph: a wrapped present — box, lid, ribbon, and a bow on top.
 func _draw_present_icon(icon: Control) -> void:
 	var ctr := icon.size * 0.5
-	var box := Color(0.92, 0.92, 0.92)
-	var ribbon := Color(0.98, 0.78, 0.32)
+	var box := Settings.scheme().text
+	var ribbon := Settings.scheme().accent
 	var bx := ctr.x
 	var top := ctr.y - 1.0
 	icon.draw_rect(Rect2(Vector2(bx - 8.0, top), Vector2(16.0, 10.0)), box)              # body
@@ -635,10 +1153,68 @@ func _draw_present_icon(icon: Control) -> void:
 	]), ribbon)
 
 
+## Currency glyph: a faceted, downward-pointing cut gem — flat table on top, a
+## girdle at its widest, culet at the bottom, with facet lines scored across it
+## so it reads as jewel rather than plain diamond. Fixed sapphire blue (NOT the
+## palette accent) so the gem keeps one identity across every scheme and stays
+## distinct from the accent-tinted Gold and Soul glyphs beside it.
+func _draw_gem_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var body := Color(0.35, 0.62, 1.0)
+	var facet := body.darkened(0.4)
+	var tw := 3.5   ## half-width of the flat top (table)
+	var mw := 6.0   ## half-width at the girdle (widest point)
+	var ty := -5.5  ## table height
+	var gy := -1.5  ## girdle height
+	var by := 6.5   ## culet (bottom point)
+	var table_l := ctr + Vector2(-tw, ty)
+	var table_r := ctr + Vector2(tw, ty)
+	var giro_l := ctr + Vector2(-mw, gy)
+	var giro_r := ctr + Vector2(mw, gy)
+	var tip := ctr + Vector2(0.0, by)
+	icon.draw_colored_polygon(PackedVector2Array([table_l, table_r, giro_r, tip, giro_l]), body)
+	## Facets: crown edges, the girdle line, and pavilion ridges down to the tip.
+	icon.draw_line(table_l, giro_l, facet, 1.0)
+	icon.draw_line(table_r, giro_r, facet, 1.0)
+	icon.draw_line(giro_l, giro_r, facet, 1.0)
+	icon.draw_line(table_l, tip, facet, 1.0)
+	icon.draw_line(table_r, tip, facet, 1.0)
+
+
+## Currency glyph: a soul as a little wisp — a rounded head, a body tapering to a
+## wavy hem of three tails, and two hollow eyes. Fixed bright white (NOT the
+## palette accent), matching the Gold coin and blue Gem which also hold one colour
+## across every scheme. Distinct from the Bestiary skull: this is a spirit, not a
+## dead thing. Eyes are cut from a dark ghost-grey so they read as holes on white.
+func _draw_soul_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var body := Color(0.97, 0.98, 1.0)
+	var hollow := Color(0.20, 0.22, 0.28)
+	icon.draw_circle(ctr + Vector2(0.0, -2.0), 5.0, body)              # head
+	icon.draw_rect(Rect2(ctr + Vector2(-5.0, -2.0), Vector2(10.0, 6.0)), body)  # body
+	for i in 3:                                                        # wavy hem
+		icon.draw_circle(ctr + Vector2(-3.4 + 3.4 * float(i), 4.0), 1.7, body)
+	icon.draw_circle(ctr + Vector2(-1.9, -2.4), 1.2, hollow)          # eyes
+	icon.draw_circle(ctr + Vector2(1.9, -2.4), 1.2, hollow)
+
+
+## Currency glyph: a gold coin — a rimmed disc with an inner ring and a minted
+## highlight. Fixed gold (NOT the palette accent) so the coin always reads as gold
+## and stays distinct from the accent-tinted Soul glyph and the blue Gem.
+func _draw_gold_icon(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var body := Color(1.0, 0.82, 0.22)
+	var rim := body.darkened(0.4)
+	icon.draw_circle(ctr, 7.0, rim)
+	icon.draw_circle(ctr, 5.8, body)
+	icon.draw_arc(ctr, 4.0, 0.0, TAU, 20, rim, 1.0)
+	icon.draw_circle(ctr + Vector2(-1.8, -1.8), 1.5, body.lightened(0.4))
+
+
 ## Settings glyph: a simple gear — radial teeth, a ring body, and a center axle.
 func _draw_gear_icon(icon: Control) -> void:
 	var ctr := icon.size * 0.5
-	var col := Color(0.92, 0.92, 0.92)
+	var col := Settings.scheme().text
 	var teeth := 8
 	var r_in := 5.5
 	var r_out := 9.5
@@ -653,7 +1229,7 @@ func _draw_gear_icon(icon: Control) -> void:
 ## Pause/resume glyph: two bars while running, a play triangle while paused.
 func _draw_pause_icon(icon: Control) -> void:
 	var ctr := icon.size * 0.5
-	var col := Color(0.92, 0.92, 0.92)
+	var col := Settings.scheme().text
 	if _paused_state:
 		var s := 8.0
 		icon.draw_colored_polygon(PackedVector2Array([
@@ -666,8 +1242,11 @@ func _draw_pause_icon(icon: Control) -> void:
 		icon.draw_rect(Rect2(ctr + Vector2(3.0, -8.0), Vector2(4.0, 16.0)), col)
 
 
+## Accepts BBCode — callers colour individual lines (see main._start_build_phase).
+## Wrapping in [center] here rather than at each call site keeps every banner
+## centred whether or not it uses colour.
 func set_message(text: String) -> void:
-	_msg_label.text = text
+	_msg_label.text = "" if text == "" else "[center]%s[/center]" % text
 
 
 func inspect(unit: Node2D) -> void:
@@ -699,30 +1278,10 @@ func refresh(is_build: bool, can_build: bool, wave_index: int,
 
 ## Procedural fallback icon for a trap tray button — used until real art is
 ## assigned to TrapData.icon. Mirrors the glyph the trap draws on the board.
+## Delegates to the same glyphs the board draws, so a trap looks identical in
+## your hand and on the floor.
 func _draw_trap_icon(icon: Control, d: TrapData) -> void:
-	var ctr := icon.size * 0.5
-	var col := d.color
-	match d.kind:
-		TrapData.Kind.AREA_DAMAGE:
-			icon.draw_rect(Rect2(ctr - Vector2(14, 14), Vector2(28, 28)), col)
-			for i in 3:
-				var x := ctr.x - 9.0 + i * 9.0
-				icon.draw_line(Vector2(x, ctr.y + 8), Vector2(x, ctr.y - 8), Color(0.9, 0.9, 0.95), 2.0)
-			icon.draw_rect(Rect2(ctr - Vector2(14, 14), Vector2(28, 28)), Color(0, 0, 0, 0.4), false, 1.5)
-		TrapData.Kind.TURRET:
-			icon.draw_rect(Rect2(ctr - Vector2(13, 13), Vector2(26, 26)), col)
-			icon.draw_line(ctr, ctr + Vector2(15, -9), Color(0.95, 0.9, 0.7), 3.0)
-			icon.draw_rect(Rect2(ctr - Vector2(13, 13), Vector2(26, 26)), Color(0, 0, 0, 0.4), false, 1.5)
-		TrapData.Kind.SLOW_AURA:
-			icon.draw_circle(ctr, 14.0, col)
-			icon.draw_arc(ctr, 14.0, 0.0, TAU, 20, Color(1, 1, 1, 0.85), 2.0)
-			icon.draw_line(ctr + Vector2(-7, 0), ctr + Vector2(7, 0), Color(1, 1, 1, 0.7), 1.5)
-			icon.draw_line(ctr + Vector2(0, -7), ctr + Vector2(0, 7), Color(1, 1, 1, 0.7), 1.5)
-		TrapData.Kind.WEAKEN_AURA:
-			icon.draw_circle(ctr, 14.0, col)
-			icon.draw_arc(ctr, 14.0, 0.0, TAU, 20, Color(0.2, 0, 0.1, 0.9), 2.0)
-			icon.draw_line(ctr + Vector2(-6, -6), ctr + Vector2(6, 6), Color(0.15, 0, 0.08), 2.0)
-			icon.draw_line(ctr + Vector2(6, -6), ctr + Vector2(-6, 6), Color(0.15, 0, 0.08), 2.0)
+	Trap.draw_glyph(icon, icon.size * 0.5, d, d.color)
 
 
 func _draw_hoard_bar() -> void:
@@ -738,18 +1297,20 @@ func _draw_hoard_bar() -> void:
 	if _preview_cost > 0 and EconomySystem.starting_hoard > 0:
 		after = maxf(0.0, float(EconomySystem.hoard - _preview_cost) / float(EconomySystem.starting_hoard))
 
+	var s: ColorScheme = Settings.scheme()
 	var f := ThemeDB.fallback_font
 	var title := "HOARD  %d / %d" % [EconomySystem.hoard, EconomySystem.starting_hoard]
 	if _preview_cost > 0:
 		title += "     spending %d" % _preview_cost
-	c.draw_string(f, Vector2(0, 18), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, Color(1.0, 0.85, 0.25))
+	c.draw_string(f, Vector2(0, 18), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, s.accent)
 
-	c.draw_rect(Rect2(Vector2(0, top), Vector2(w, h)), Color(0.13, 0.11, 0.09))
+	c.draw_rect(Rect2(Vector2(0, top), Vector2(w, h)), s.accent.darkened(0.85))
 	if _preview_cost > 0:
-		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), Color(0.55, 0.28, 0.15))
-		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * after, h)), Color(0.95, 0.78, 0.2))
+		## Two bands: what you have now, and the shorter bar you'd be left with.
+		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), s.accent.darkened(0.55))
+		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * after, h)), s.accent)
 	else:
-		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), Color(0.95, 0.78, 0.2))
+		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), s.accent)
 
 	## Allure thresholds — a colored tick with the unit's name centered above it.
 	for key in GameData.minions.keys():

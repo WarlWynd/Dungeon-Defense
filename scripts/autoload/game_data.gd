@@ -10,8 +10,10 @@ const STARTING_HOARD := 1000
 const BUILD_SECONDS := 12.0
 
 ## Boards are DATA. smoothing: 0 = straight/angular, ~0.4 = flowing. type "maze"
-## uses junctions+edges instead of points.
-const BOARDS: Array = [
+## uses junctions+edges instead of points. The first six are hand-authored; boards
+## 7-20 are appended by _build_generated_boards() at startup (a `var`, not `const`,
+## so it can grow — and const Arrays are read-only in Godot 4 anyway).
+var BOARDS: Array = [
 	{
 		"name": "The River",
 		"smoothing": 0.42,
@@ -48,6 +50,69 @@ const BOARDS: Array = [
 			[0, 1], [1, 2], [1, 3], [2, 4], [3, 5], [5, 6], [5, 7],
 			[7, 1], [7, 8], [8, 9], [8, 10], [10, 11], [11, 12],
 			[12, 13], [13, 14], [13, 15],
+		],
+		"entrance": 0,
+		"vault": 15,
+	},
+	## Grid-aligned mazes, same schema as The Warren: every edge is horizontal or
+	## vertical (right angles), the main corridor runs entrance (top) -> vault
+	## (bottom), and degree-1 junctions are the dead-end side-hallways a hero can
+	## wander into. Main path is called out per board so the branches are clear.
+	{
+		"name": "The Catacombs",
+		"type": "maze",
+		"junctions": [
+			Vector2(300, 130), Vector2(300, 300), Vector2(130, 300),
+			Vector2(470, 300), Vector2(470, 470), Vector2(600, 470),
+			Vector2(300, 470), Vector2(300, 640), Vector2(130, 640),
+			Vector2(470, 640), Vector2(470, 810), Vector2(300, 810),
+			Vector2(300, 980), Vector2(470, 980), Vector2(300, 1130),
+		],
+		## Main: 0-1-3-4-6-7-9-10-11-12-14.  Dead ends: 2, 5, 8, 13.
+		"edges": [
+			[0, 1], [1, 2], [1, 3], [3, 4], [4, 5], [4, 6], [6, 7],
+			[7, 8], [7, 9], [9, 10], [10, 11], [11, 12], [12, 13], [12, 14],
+		],
+		"entrance": 0,
+		"vault": 14,
+	},
+	{
+		"name": "The Oubliette",
+		"type": "maze",
+		"junctions": [
+			Vector2(300, 140), Vector2(300, 300), Vector2(440, 300),
+			Vector2(440, 460), Vector2(580, 460), Vector2(300, 460),
+			Vector2(160, 460), Vector2(300, 620), Vector2(440, 620),
+			Vector2(440, 780), Vector2(580, 780), Vector2(300, 780),
+			Vector2(160, 780), Vector2(300, 940), Vector2(440, 940),
+			Vector2(300, 1120),
+		],
+		## Main: 0-1-2-3-5-7-8-9-11-13-15.  Dead ends: 4, 6, 10, 12, 14.
+		"edges": [
+			[0, 1], [1, 2], [2, 3], [3, 4], [3, 5], [5, 6], [5, 7],
+			[7, 8], [8, 9], [9, 10], [9, 11], [11, 12], [11, 13],
+			[13, 14], [13, 15],
+		],
+		"entrance": 0,
+		"vault": 15,
+	},
+	{
+		"name": "The Undercroft",
+		"type": "maze",
+		"junctions": [
+			Vector2(290, 130), Vector2(290, 290), Vector2(140, 290),
+			Vector2(440, 290), Vector2(440, 450), Vector2(590, 450),
+			Vector2(290, 450), Vector2(290, 610), Vector2(440, 610),
+			Vector2(440, 770), Vector2(290, 770), Vector2(140, 770),
+			Vector2(140, 930), Vector2(290, 930), Vector2(440, 930),
+			Vector2(290, 1120),
+		],
+		## Main: 0-1-3-4-6-7-10-13-15.  Dead ends: 2, 5, 14, plus two L-shaped
+		## hallways with a corner: 8->9 and 11->12.
+		"edges": [
+			[0, 1], [1, 2], [1, 3], [3, 4], [4, 5], [4, 6], [6, 7],
+			[7, 8], [8, 9], [7, 10], [10, 11], [11, 12], [10, 13],
+			[13, 14], [13, 15],
 		],
 		"entrance": 0,
 		"vault": 15,
@@ -91,8 +156,14 @@ func entrance_pos() -> Vector2:
 	return b["points"][0]
 
 
-func next_board() -> void:
-	active_board = (active_board + 1) % BOARDS.size()
+## Steps the board by `delta`, wrapping at both ends. posmod keeps -1 from
+## landing on a negative index.
+func step_board(delta: int) -> void:
+	active_board = posmod(active_board + delta, BOARDS.size())
+
+
+func board_count() -> int:
+	return BOARDS.size()
 
 
 const WAVES: Array = [
@@ -109,6 +180,143 @@ func _ready() -> void:
 	_build_heroes()
 	_build_traps()
 	_build_minions()
+	_build_generated_boards()
+
+
+## --- Procedural boards (7-20) ---------------------------------------------
+##
+## Deterministic grid mazes in the same shape as the hand-authored ones: every
+## edge is horizontal or vertical (right angles), a main corridor snakes from a
+## top entrance to a bottom vault, and random dead-end hallways branch off it.
+## Each board is seeded by its index, so a given board's layout is FIXED across
+## runs — the player can still learn board 14 the way they learn The Warren.
+
+const GEN_COLS: Array = [130.0, 290.0, 450.0, 600.0]
+const GEN_ROWS: Array = [130.0, 290.0, 450.0, 610.0, 770.0, 930.0, 1120.0]
+const GEN_NAMES: Array = [
+	"The Sunless Coil", "The Gnawed Halls", "The Ossuary", "The Black Sump",
+	"The Wormways", "The Hollow March", "The Rusted Vaults", "The Gibbet Maze",
+	"The Drowned Tiers", "The Ashen Burrows", "The Splintered Deep",
+	"The Cinder Warren", "The Lightless Knot", "The Final Descent",
+]
+
+
+func _build_generated_boards() -> void:
+	for i in GEN_NAMES.size():
+		## +1 on the seed keeps board 7 from ever generating an empty-looking layout
+		## at seed 0; the exact value only has to be stable, not meaningful.
+		BOARDS.append(_generate_maze_board(GEN_NAMES[i], 1481 + i * 97))
+
+
+func _generate_maze_board(nm: String, seed_val: int) -> Dictionary:
+	var rng := RandomNumberGenerator.new()
+	rng.seed = seed_val
+	var n_cols: int = GEN_COLS.size()
+	var n_rows: int = GEN_ROWS.size()
+
+	var cells := {}          ## Vector2i(col,row) -> junction index
+	var junctions: Array = []
+	var edges: Array = []
+	var edge_set := {}
+	var main_cells: Array = []   ## grid cells on the main corridor, for branching
+
+	## Main corridor: start near the middle of the top row, then descend row by
+	## row, sometimes jogging one column sideways first so it snakes.
+	var c: int = rng.randi_range(1, n_cols - 2)
+	var entrance_idx: int = _gen_node(cells, junctions, c, 0)
+	main_cells.append(Vector2i(c, 0))
+	var prev: int = entrance_idx
+	for r in range(1, n_rows):
+		if rng.randf() < 0.6:
+			var dir: int = 1 if rng.randf() < 0.5 else -1
+			var nc: int = clampi(c + dir, 0, n_cols - 1)
+			if nc != c:
+				var jog: int = _gen_node(cells, junctions, nc, r - 1)
+				_gen_edge(edges, edge_set, prev, jog)
+				main_cells.append(Vector2i(nc, r - 1))
+				prev = jog
+				c = nc
+		var down: int = _gen_node(cells, junctions, c, r)
+		_gen_edge(edges, edge_set, prev, down)
+		main_cells.append(Vector2i(c, r))
+		prev = down
+	var vault_idx: int = prev
+
+	## Dead-end hallways: hang a short spur (sometimes an L of two segments) off a
+	## random corridor junction into a free, in-bounds neighbouring cell.
+	var dirs := [Vector2i(1, 0), Vector2i(-1, 0), Vector2i(0, 1), Vector2i(0, -1)]
+	var branches: int = rng.randi_range(5, 8)
+	for _b in range(branches):
+		var base: Vector2i = main_cells[rng.randi_range(0, main_cells.size() - 1)]
+		_gen_shuffle(dirs, rng)
+		for d in dirs:
+			var tc: int = base.x + d.x
+			var tr: int = base.y + d.y
+			if tc < 0 or tc >= n_cols or tr < 0 or tr >= n_rows:
+				continue
+			if cells.has(Vector2i(tc, tr)):
+				continue
+			var from_idx: int = cells[base]
+			var spur: int = _gen_node(cells, junctions, tc, tr)
+			_gen_edge(edges, edge_set, from_idx, spur)
+			## 40% of the time, bend one more step (perpendicular) into a free cell
+			## so some hallways turn a corner instead of stopping dead.
+			if rng.randf() < 0.4:
+				_gen_shuffle(dirs, rng)
+				for d2 in dirs:
+					if d2 == d or d2 == -d:
+						continue
+					var ec: int = tc + d2.x
+					var er: int = tr + d2.y
+					if ec < 0 or ec >= n_cols or er < 0 or er >= n_rows:
+						continue
+					if cells.has(Vector2i(ec, er)):
+						continue
+					var elbow: int = _gen_node(cells, junctions, ec, er)
+					_gen_edge(edges, edge_set, spur, elbow)
+					break
+			break
+
+	return {
+		"name": nm,
+		"type": "maze",
+		"junctions": junctions,
+		"edges": edges,
+		"entrance": entrance_idx,
+		"vault": vault_idx,
+	}
+
+
+## Get-or-create the junction at grid cell (c, r). Dictionaries and Arrays pass by
+## reference, so the caller's `cells`/`junctions` grow in place.
+func _gen_node(cells: Dictionary, junctions: Array, c: int, r: int) -> int:
+	var key := Vector2i(c, r)
+	if cells.has(key):
+		return cells[key]
+	var idx: int = junctions.size()
+	junctions.append(Vector2(GEN_COLS[c], GEN_ROWS[r]))
+	cells[key] = idx
+	return idx
+
+
+func _gen_edge(edges: Array, edge_set: Dictionary, a: int, b: int) -> void:
+	if a == b:
+		return
+	var key := Vector2i(mini(a, b), maxi(a, b))
+	if edge_set.has(key):
+		return
+	edge_set[key] = true
+	edges.append([a, b])
+
+
+## Seeded Fisher-Yates, so branch directions stay deterministic per board rather
+## than depending on the engine's global RNG.
+func _gen_shuffle(arr: Array, rng: RandomNumberGenerator) -> void:
+	for i in range(arr.size() - 1, 0, -1):
+		var j: int = rng.randi_range(0, i)
+		var tmp = arr[i]
+		arr[i] = arr[j]
+		arr[j] = tmp
 
 
 func _hero(id: String, dname: String, hp: float, spd: float, flee: float, greed: int,
@@ -138,7 +346,7 @@ func _hero(id: String, dname: String, hp: float, spd: float, flee: float, greed:
 func _build_heroes() -> void:
 	_hero("squire", "Squire", 42.0, 88.0, 1.15, 25, 7, 6.0, 0.9, 30.0, 0.10, 0.0, 0.2,
 		Color(0.79, 0.72, 0.55), 11.0,
-		"Cannon fodder. Weak, fast, never alone. A dozen squires is still 300 gold out the door.")
+		"Cannon fodder. Weak, fast, never alone. A dozen squires is still 300 Gold out the door.")
 
 	_hero("treasure_hunter", "Treasure Hunter", 30.0, 135.0, 1.6, 160, 14, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0,
 		Color(0.95, 0.55, 0.15), 10.0,
@@ -162,7 +370,7 @@ func _build_heroes() -> void:
 
 	var paladin := _hero("paladin", "Paladin", 170.0, 50.0, 1.0, 0, 55, 8.0, 1.4, 32.0, 0.50, 0.60, 1.00,
 		Color(0.98, 0.92, 0.62), 14.0,
-		"Not a bigger Knight — the SHIELD. Hits soft, wears less armour. 100% purity, and BLESSES its escort to 85%: while it lives your Succubus is useless. 60% magic def, so poison is the wrong key. Takes no gold. Kill it FIRST.")
+		"Not a bigger Knight — the SHIELD. Hits soft, wears less armour. 100% purity, and BLESSES its escort to 85%: while it lives your Succubus is useless. 60% magic def, so poison is the wrong key. Takes no Gold. Kill it FIRST.")
 
 	# Healer tuning (heal_amount set inline above via .heal_amount).
 	heroes["priestess"].heal_rate = 2.5
@@ -175,6 +383,90 @@ func _build_heroes() -> void:
 
 	paladin.purity_aura = 0.85
 	paladin.purity_aura_range = 150.0
+
+	_hero_lore()
+
+
+## Bestiary strengths/weaknesses. Kept together so the whole roster reads as one
+## voice, and so the counter-matrix numbers stay consistent between entries.
+func _hero_lore() -> void:
+	heroes["squire"].strengths = PackedStringArray([
+		"Never alone. Six or more per wave, and a dozen still walk out with 300 Gold.",
+		"Flees 15% faster than it advances (101 vs 88) — it's already moving when you react.",
+		"Cheap enough that the kingdom never stops sending them.",
+	])
+	heroes["squire"].weaknesses = PackedStringArray([
+		"42 HP and only 10% armour. A Crossbow Turret kills one in 2.0s.",
+		"20% purity — the Succubus turns it 80% of the time.",
+		"Steals only 25. One leak is survivable; it's the tenth that kills you.",
+	])
+
+	heroes["treasure_hunter"].strengths = PackedStringArray([
+		"Steals 160 in one grab — over 6x a Squire, from a single body.",
+		"The fastest thing in the game: 135 in, 216 fleeing.",
+		"Ignores your minions completely. They cannot block or bait it.",
+	])
+	heroes["treasure_hunter"].weaknesses = PackedStringArray([
+		"30 HP, no armour, no magic defence. A Crossbow kills it in 1.3s.",
+		"0% purity — the Succubus charms it EVERY time, without fail.",
+		"Deals no damage whatsoever. It cannot harm a trap or a minion.",
+		"It dies easily; the trick is that it'll be BEHIND your traps. Cover the way out.",
+	])
+
+	heroes["knight"].strengths = PackedStringArray([
+		"75% armour. A Crossbow Turret needs 22 seconds to get through it.",
+		"12.7 DPS butchers your minions — a goblin dies in 3s, the whole pack in under 10.",
+		"130 HP, the second-deepest pool in the game.",
+	])
+	heroes["knight"].weaknesses = PackedStringArray([
+		"0% magic defence. Poison kills it in 9s instead of 22s — that gap IS the lesson.",
+		"58 speed and no flee bonus: the slowest raider, so it spends the longest in your traps.",
+		"50% purity is a coin flip, and the Succubus re-rolls every 6 seconds.",
+	])
+
+	heroes["acolyte"].strengths = PackedStringArray([
+		"Heals 2.7 HP/sec — almost exactly enough to undo one Dart Launcher.",
+		"Arrives beside real threats and quietly cancels your chip damage.",
+	])
+	heroes["acolyte"].weaknesses = PackedStringArray([
+		"35 HP, no armour, no magic defence. Everything kills it quickly.",
+		"85% charmable — the easiest hero in the game to turn.",
+		"Its heal is small enough that any burst damage simply outruns it.",
+	])
+
+	heroes["priestess"].strengths = PackedStringArray([
+		"5.6 HP/sec — more than a Crossbow Turret does to an armoured Knight.",
+		"165 heal range lets her mend from outside most of your trap coverage.",
+		"Always mends whoever is worst hurt, so spreading damage achieves nothing.",
+	])
+	heroes["priestess"].weaknesses = PackedStringArray([
+		"45 HP and 0% armour — she folds to any physical trap in about 3 seconds.",
+		"70% charmable.",
+		"Deals no damage at all. She is only ever as dangerous as what she keeps alive.",
+	])
+
+	heroes["high_priestess"].strengths = PackedStringArray([
+		"10 HP/sec across a 200 range. No single physical trap out-damages that through armour.",
+		"30% magic defence, so poison is a poor answer to her as well.",
+		"55% purity — she resists the Succubus more often than she falls to her.",
+	])
+	heroes["high_priestess"].weaknesses = PackedStringArray([
+		"Only 70 HP. Every answer to her is worse than usual, but the body is still soft.",
+		"Reach her and she dies fast — the whole problem is getting to her.",
+		"Kill her and the wave collapses at once.",
+	])
+
+	heroes["paladin"].strengths = PackedStringArray([
+		"100% purity. Cannot ever be charmed — not once, not with any upgrade.",
+		"Blesses every hero within 150 to 85% purity, switching your Succubus off entirely.",
+		"170 HP with 50% armour AND 60% magic defence — the deepest pool in the game.",
+	])
+	heroes["paladin"].weaknesses = PackedStringArray([
+		"Poison is the WRONG key: 60% magic defence makes it worse than physical (30s vs 14s).",
+		"Only 5.7 DPS. It barely fights — it's a shield, not a sword.",
+		"Takes no Gold at all, so letting it walk out costs you nothing directly.",
+		"Kill it and the blessing lapses instantly — its escort becomes charmable mid-wave.",
+	])
 
 
 func _trap(id: String, tname: String, kind: TrapData.Kind, cost: int, dmg: float, dtype: String,
@@ -195,23 +487,112 @@ func _trap(id: String, tname: String, kind: TrapData.Kind, cost: int, dmg: float
 
 
 func _build_traps() -> void:
-	var spike := _trap("spike_pit", "Spike Pit", TrapData.Kind.AREA_DAMAGE, 60, 7.0, "physical",
-		46.0, 0.45, Color(0.62, 0.62, 0.68), "Simple. Honest. Pointy.")
-	if ResourceLoader.exists("res://assets/textures/SpikePitTrap.png"):
-		spike.icon = load("res://assets/textures/SpikePitTrap.png")
+	## FOUR turrets to THREE passives, on purpose: the active ones are what make a
+	## wave fun to watch, so they outnumber the set-and-forget auras.
+	var dart := _trap("dart_launcher", "Dart Launcher", TrapData.Kind.TURRET, 55, 5.0, "physical",
+		120.0, 0.35, Color(0.72, 0.68, 0.46),
+		"Cheap, twitchy, and always shooting. It never wins a fight alone — it just never stops.")
+	dart.glyph = "dart"
+	## The Dart Launcher is 'simple': always shoots the FIRST hero, locked.
+	dart.targeting = TrapData.Targeting.FIRST
+	dart.fixed_targeting = true
+	dart.icon = _load_png_raw("res://assets/textures/DartTrap.png")
+
 	var crossbow := _trap("crossbow", "Crossbow Turret", TrapData.Kind.TURRET, 110, 13.0, "physical",
 		160.0, 0.55, Color(0.55, 0.35, 0.22), "Points at whoever is nearest.")
-	if ResourceLoader.exists("res://assets/textures/CrossBowTrap.png"):
-		crossbow.icon = load("res://assets/textures/CrossBowTrap.png")
+	crossbow.glyph = "crossbow"
+
+	## The armour answer. A Knight shrugs off 75% of physical; this ignores that
+	## axis entirely and goes at his 0% magic defence instead.
+	var arcane := _trap("magic_turret", "Magic Turret", TrapData.Kind.TURRET, 135, 11.0, "magic",
+		150.0, 0.60, Color(0.58, 0.45, 0.92),
+		"Armour is a suit of metal. This was never going to care about a suit of metal.")
+	arcane.glyph = "arcane"
+
+	## The crowd answer. Siege damage halves armour, and the shell catches whoever
+	## is standing near the target — the counter to a packed squire wave.
+	var mortar := _trap("explosive_turret", "Explosive Turret", TrapData.Kind.TURRET, 165, 26.0, "siege",
+		190.0, 1.50, Color(0.92, 0.48, 0.20),
+		"Slow, expensive, and it does not care how tightly they were standing together.")
+	mortar.glyph = "mortar"
+	mortar.splash_radius = 62.0
+	mortar.targeting = TrapData.Targeting.TOUGHEST
+
+	crossbow.icon = _load_keyed("res://assets/textures/CrossBowTrap.png")
+
 	var frost := _trap("frost_totem", "Frost Totem", TrapData.Kind.SLOW_AURA, 85, 0.0, "physical",
 		130.0, 1.0, Color(0.45, 0.78, 0.95), "Does no damage. Wins the level.")
 	frost.slow_amount = 0.45
-	_trap("poison_fungus", "Poison Fungus", TrapData.Kind.AREA_DAMAGE, 90, 5.0, "magic",
+	var poison := _trap("poison_fungus", "Poison Fungus", TrapData.Kind.AREA_DAMAGE, 90, 5.0, "magic",
 		52.0, 0.35, Color(0.45, 0.75, 0.35), "Armour is no help against a smell.")
+	poison.glyph = "fungus"
 	var brazier := _trap("cursed_brazier", "Cursed Brazier", TrapData.Kind.WEAKEN_AURA, 120, 0.0, "physical",
 		140.0, 1.0, Color(0.55, 0.15, 0.35), "Let them mend it. It won't hold.")
 	brazier.weaken_damage_bonus = 0.30
 	brazier.weaken_heal_cut = 0.60
+
+
+## Load a PNG straight off disk into an ImageTexture, bypassing Godot's import
+## pipeline — needed for art that a headless CLI run hasn't imported yet (no
+## .import/.ctex). The file already has a transparent background, so no keying.
+func _load_png_raw(path: String) -> Texture2D:
+	var img := Image.new()
+	if img.load(path) != OK:
+		return null
+	return ImageTexture.create_from_image(img)
+
+
+## Load a PNG and knock its (near-)white background out to transparent, so art
+## authored on a white sheet drops cleanly onto the board. Threshold is generous
+## enough to catch off-white; if it ever eats a light highlight in the art, raise
+## it toward 1.0. Runs once at startup.
+func _load_keyed(path: String, threshold: float = 0.90) -> Texture2D:
+	if not ResourceLoader.exists(path):
+		return null
+	var tex := load(path) as Texture2D
+	if tex == null:
+		return null
+	var img := tex.get_image()
+	if img == null:
+		return tex
+	img.decompress()   ## imported textures can come back VRAM-compressed
+	img.convert(Image.FORMAT_RGBA8)
+	var w := img.get_width()
+	var h := img.get_height()
+
+	## 1) White (background) -> transparent.
+	for y in h:
+		for x in w:
+			var col := img.get_pixel(x, y)
+			if col.a > 0.0 and col.r >= threshold and col.g >= threshold and col.b >= threshold:
+				img.set_pixel(x, y, Color(col.r, col.g, col.b, 0.0))
+
+	## 2) Knock out a dark BORDER FRAME by flood-filling dark pixels inward from the
+	## edges. It stops at the transparent moat the white key just made, so the
+	## sprite's own dark outlines (separated from the frame by that moat) survive.
+	var stack: Array[Vector2i] = []
+	for x in w:
+		stack.append(Vector2i(x, 0))
+		stack.append(Vector2i(x, h - 1))
+	for y in h:
+		stack.append(Vector2i(0, y))
+		stack.append(Vector2i(w - 1, y))
+	while not stack.is_empty():
+		var p: Vector2i = stack.pop_back()
+		if p.x < 0 or p.x >= w or p.y < 0 or p.y >= h:
+			continue
+		var col := img.get_pixel(p.x, p.y)
+		if col.a <= 0.0:
+			continue   ## transparent — the moat; stop here
+		if maxf(col.r, maxf(col.g, col.b)) > 0.30:
+			continue   ## not frame-dark; leave the art alone
+		img.set_pixel(p.x, p.y, Color(col.r, col.g, col.b, 0.0))
+		stack.append(Vector2i(p.x + 1, p.y))
+		stack.append(Vector2i(p.x - 1, p.y))
+		stack.append(Vector2i(p.x, p.y + 1))
+		stack.append(Vector2i(p.x, p.y - 1))
+
+	return ImageTexture.create_from_image(img)
 
 
 func _build_minions() -> void:
@@ -232,7 +613,18 @@ func _build_minions() -> void:
 	goblins.unlock_wave = 1
 	goblins.color = Color(0.45, 0.72, 0.35)
 	goblins.radius = 10.0
-	goblins.description = "Three separate goblins, 40 HP each. They chase whoever carries your gold. A Knight cuts one down in 3s. Earned by clearing wave 1 — loyal for good once earned."
+	goblins.description = "Three separate goblins, 40 HP each. They chase whoever carries your Gold. A Knight cuts one down in 3s. Earned by clearing wave 1 — loyal for good once earned."
+	goblins.strengths = PackedStringArray([
+		"Three bodies, not one. A single big hit only removes a third of the pack.",
+		"Hunts whoever is CARRYING your Gold, not whoever is nearest — one catch pays for the whole pack.",
+		"30 DPS as a pack against unarmoured targets: it kills a 42 HP Squire in under 2s.",
+		"Costs nothing. No Gold, no souls, and it never deserts however poor you get.",
+	])
+	goblins.weaknesses = PackedStringArray([
+		"Physical damage, so armour guts it: 30 DPS becomes 7.5 against a 75%-armour Knight (~17s to kill).",
+		"40 HP and no armour. A Knight kills one goblin every 3 seconds.",
+		"Melee only — it has to close, so a fleeing Treasure Hunter (135 speed vs its 105) simply outruns it.",
+	])
 	minions["goblin_pack"] = goblins
 
 	var succubus := MinionData.new()
@@ -256,7 +648,19 @@ func _build_minions() -> void:
 	succubus.charm_power = 0.5
 	succubus.color = Color(0.85, 0.25, 0.55)
 	succubus.radius = 11.0
-	succubus.description = "Drawn only by a rich hoard. She CHARMS a thief into carrying your gold back for you. Beaten only by purity. Fragile. Protect her."
+	succubus.description = "Drawn only by a rich hoard. She CHARMS a thief into carrying your Gold back for you. Beaten only by purity. Fragile. Protect her."
+	succubus.strengths = PackedStringArray([
+		"Turns a loss into a gain — a charmed thief walks your Gold BACK to the vault instead of out the door.",
+		"Charm ignores HP, armour and magic defence entirely. She beats things she could never kill.",
+		"170 range and a re-roll every 6s, so across a long corridor a coin-flip target falls roughly 78% of the time.",
+		"Arrives free the moment the hoard is rich enough. No souls, no Gold.",
+	])
+	succubus.weaknesses = PackedStringArray([
+		"Barely fights: 4 damage every 1.2s is 3.3 DPS. She cannot kill anything on her own.",
+		"55 HP and no armour — a Knight cuts her down in about 4 seconds. She needs a bodyguard.",
+		"Beaten flat by purity. A Paladin is 100% pure AND blesses its escort to 85%, which switches her off completely.",
+		"The only Anti-Hero that DESERTS: she leaves below 65% hoard, exactly when things are going badly.",
+	])
 	minions["succubus"] = succubus
 
 	## BOUGHT with souls (or gems). A vengeful shade — fast, hard-hitting, and it
@@ -279,7 +683,19 @@ func _build_minions() -> void:
 	wraith.recruit_gems = 30
 	wraith.color = Color(0.55, 0.35, 0.75)
 	wraith.radius = 12.0
-	wraith.description = "A vengeful shade bought with souls. Hits hard, moves fast, and hunts whoever carries your gold. Yours for good once recruited."
+	wraith.description = "A vengeful shade bought with souls. Hits hard, moves fast, and hunts whoever carries your Gold. Yours for good once recruited."
+	wraith.strengths = PackedStringArray([
+		"The hardest hitter you can field: 16 damage every 0.9s = 17.8 DPS from a single unit.",
+		"120 speed — faster than every hero except the Treasure Hunter, so it can actually run thieves down.",
+		"Hunts Gold-carriers first, and kills a 30 HP Treasure Hunter in under 2 seconds.",
+		"Bought once with souls and yours permanently. It never deserts, however poor the hoard gets.",
+	])
+	wraith.weaknesses = PackedStringArray([
+		"Costs 25 souls (or 30 gems) up front — the only Anti-Hero you must pay for.",
+		"Physical damage, so armour still answers it: 17.8 DPS drops to 4.4 against a 75%-armour Knight (~30s).",
+		"90 HP and no armour. A Knight kills it in about 7 seconds.",
+		"Only one of it. Focus it down and your whole offence is gone until the next level.",
+	])
 	minions["wraith"] = wraith
 
 

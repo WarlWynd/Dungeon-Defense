@@ -1,6 +1,12 @@
 extends Node2D
 class_name Minion
 
+const UnitGlyphs := preload("res://scripts/data/unit_glyphs.gd")
+const WalkMotion := preload("res://scripts/data/walk_motion.gd")
+
+var _walk := WalkMotion.new()
+var _prev_pos := Vector2.ZERO
+
 ## A monster your HOARD attracted. Mobile, loyal to the pile, and it PURSUES
 ## FLEEING THIEVES — which is what makes it worth more than its damage.
 
@@ -48,6 +54,7 @@ func setup(minion_data: MinionData, home: Vector2) -> void:
 	hp = data.max_hp
 	_home = home
 	position = home
+	_prev_pos = home
 
 
 func is_alive() -> bool:
@@ -123,6 +130,11 @@ func take_damage(amount: float, _damage_type: String = "physical") -> void:
 
 
 func _physics_process(delta: float) -> void:
+	## Walk juice first, before any early return. Velocity is last frame's move.
+	_walk.update(delta, (position - _prev_pos) / maxf(delta, 0.0001), global_rotation, data.radius)
+	_prev_pos = position
+	queue_redraw()
+
 	_attack_cd = maxf(0.0, _attack_cd - delta)
 	_charm_cd = maxf(0.0, _charm_cd - delta)
 
@@ -221,9 +233,6 @@ func _draw() -> void:
 	if data.can_charm and data.charm_range > 0.0:
 		draw_arc(Vector2.ZERO, data.charm_range, 0.0, TAU, 48, Color(0.9, 0.3, 0.6, 0.10), 1.0)
 
-	draw_circle(Vector2.ZERO, r, data.color)
-	draw_arc(Vector2.ZERO, r, 0.0, TAU, 20, Color(0, 0, 0, 0.5), 1.5)
-
 	if selected:
 		draw_arc(Vector2.ZERO, r + 11.0, 0.0, TAU, 28, Color(1, 1, 1, 0.95), 2.5)
 
@@ -236,8 +245,14 @@ func _draw() -> void:
 	## Screen-aligned overlays (cancel world rotation).
 	draw_set_transform(Vector2.ZERO, -global_rotation, Vector2.ONE)
 
-	draw_line(Vector2(-r * 0.6, -r * 0.7), Vector2(-r * 0.9, -r * 1.5), Color(0, 0, 0, 0.7), 2.0)
-	draw_line(Vector2(r * 0.6, -r * 0.7), Vector2(r * 0.9, -r * 1.5), Color(0, 0, 0, 0.7), 2.0)
+	## Body is the same glyph the Bestiary draws (goblin / succubus / wraith),
+	## screen-upright so it always faces the player, with the walk bob/lean/squash
+	## applied. Each glyph carries its own ears/horns, so the old ear lines are gone.
+	draw_set_transform(Vector2.ZERO, -global_rotation + _walk.rotation, _walk.scale)
+	UnitGlyphs.legs(self, _walk.offset, r / 8.0, _walk.stride, data.color)
+	UnitGlyphs.draw(self, _walk.offset, r / 8.0, "minion", data.id, data.color)
+	## Reset to a plain screen-upright frame so the HP bar doesn't bob or squash.
+	draw_set_transform(Vector2.ZERO, -global_rotation, Vector2.ONE)
 
 	var pct := clampf(hp / data.max_hp, 0.0, 1.0)
 	var w := r * 2.2

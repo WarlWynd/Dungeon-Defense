@@ -13,8 +13,11 @@ class_name Inspector
 ## going wrong, right now?" — and on a board of identical coloured dots, that
 ## second question is the one the player actually has.
 
+signal sell_requested(trap: Node2D)
+
 var _target: Node2D = null
 var _priority_btn: Button
+var _sell_btn: Button
 
 const W := 268.0
 const PAD := 12.0
@@ -35,6 +38,15 @@ func _ready() -> void:
 	_priority_btn.pressed.connect(_on_priority_pressed)
 	add_child(_priority_btn)
 
+	## Sell sits on every trap card (not just turrets). A dedicated button rather
+	## than a step in the targeting cycle, so cycling priority can't sell by
+	## accident. Position is set per-card in show_unit.
+	_sell_btn = Button.new()
+	_sell_btn.custom_minimum_size = Vector2(W - PAD * 2.0, 32)
+	_sell_btn.visible = false
+	_sell_btn.pressed.connect(_on_sell_pressed)
+	add_child(_sell_btn)
+
 
 func _on_priority_pressed() -> void:
 	var trap := _target as Trap
@@ -44,14 +56,70 @@ func _on_priority_pressed() -> void:
 	queue_redraw()
 
 
+func _on_sell_pressed() -> void:
+	if _target is Trap:
+		sell_requested.emit(_target)
+
+
+## Fill the Sell button with "Sell  +N" and a gold coin glyph instead of the word
+## "Gold". Content rides inside the button (mouse ignored) so the whole thing stays
+## one tap target; rebuilt each time because the refund text changes per trap.
+func _build_sell_content(refund: int) -> void:
+	for c in _sell_btn.get_children():
+		c.queue_free()
+	_sell_btn.text = ""
+
+	var row := HBoxContainer.new()
+	row.set_anchors_preset(Control.PRESET_FULL_RECT)
+	row.alignment = BoxContainer.ALIGNMENT_CENTER
+	row.add_theme_constant_override("separation", 4)
+	row.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_sell_btn.add_child(row)
+
+	var lbl := Label.new()
+	lbl.text = "Sell   +%d" % refund
+	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	row.add_child(lbl)
+
+	var coin := Control.new()
+	coin.custom_minimum_size = Vector2(15, 16)
+	coin.size_flags_vertical = Control.SIZE_SHRINK_CENTER
+	coin.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	coin.draw.connect(_draw_sell_coin.bind(coin))
+	row.add_child(coin)
+
+
+## Gold coin — matches the HUD/Bestiary coin.
+func _draw_sell_coin(icon: Control) -> void:
+	var ctr := icon.size * 0.5
+	var body := Color(1.0, 0.82, 0.22)
+	var rim := Color(0.6, 0.45, 0.08)
+	icon.draw_circle(ctr, 7.0, rim)
+	icon.draw_circle(ctr, 5.8, body)
+	icon.draw_arc(ctr, 4.0, 0.0, TAU, 20, rim, 1.0)
+	icon.draw_circle(ctr + Vector2(-1.8, -1.8), 1.5, Color(1.0, 0.92, 0.55))
+
+
 func show_unit(unit: Node2D) -> void:
 	_target = unit
 	visible = unit != null
 
-	## Only turrets choose a target. Area traps hit everything in range anyway.
+	## Only turrets choose a target, and only if they aren't 'simple' (fixed) — the
+	## Dart Launcher shows no priority button at all.
 	var trap := unit as Trap
-	var is_turret := trap != null and trap.data.kind == TrapData.Kind.TURRET
-	_priority_btn.visible = is_turret
+	var has_priority := trap != null and trap.data.kind == TrapData.Kind.TURRET \
+			and not trap.data.fixed_targeting
+	_priority_btn.visible = has_priority
+
+	## Sell is offered for any trap, parked at the bottom of the card (whose height
+	## _trap_card_height mirrors what _draw_trap_card lays out).
+	if trap != null:
+		_build_sell_content(Trap.sell_value(trap.data))
+		_sell_btn.position = Vector2(PAD, _trap_card_height(has_priority) - 40.0)
+		_sell_btn.visible = true
+	else:
+		_sell_btn.visible = false
 	queue_redraw()
 
 
@@ -59,6 +127,7 @@ func clear() -> void:
 	_target = null
 	visible = false
 	_priority_btn.visible = false
+	_sell_btn.visible = false
 
 
 func target() -> Node2D:
@@ -123,13 +192,13 @@ func _hero_lines(h: Hero) -> Array:
 
 	## The number the player is actually panicking about.
 	if h.is_carrying():
-		lines.append(["Carrying %d of your gold" % h.carried_gold,
+		lines.append(["Carrying %d of your Gold" % h.carried_gold,
 				Color(1.0, 0.84, 0.25)])
 	elif h.data.greed > 0:
 		lines.append(["Will steal %d" % h.data.greed, Color(0.75, 0.68, 0.4)])
 
 	## What's on the corpse.
-	lines.append(["Plunder: %d gold if it dies here" % h.data.bounty,
+	lines.append(["Plunder: %d Gold if it dies here" % h.data.bounty,
 			Color(1.0, 0.92, 0.55)])
 
 	## The healer, called out in green — she is very often the reason the
@@ -198,10 +267,10 @@ func _minion_lines(m: Minion) -> Array:
 		lines.append(["Loyal to the pile. For now.", Color(0.7, 0.9, 0.7)])
 
 	if m.data.can_charm:
-		lines.append(["Charms thieves into returning gold",
+		lines.append(["Charms thieves into returning Gold",
 				Color(1.0, 0.55, 0.8)])
 	if m.data.pursue_thieves_first:
-		lines.append(["Hunts whoever carries your gold",
+		lines.append(["Hunts whoever carries your Gold",
 				Color(0.8, 0.9, 0.8)])
 
 	lines.append(["", Color.WHITE])
@@ -210,6 +279,20 @@ func _minion_lines(m: Minion) -> Array:
 	lines.append(["Stays while hoard > %d%%"
 			% int(m.data.allure_desert * 100.0), Color(0.75, 0.75, 0.6)])
 	return lines
+
+
+## Heart as primitives — two lobes and a triangle to the point. Mirrors the
+## Bestiary's _draw_heart so the HP heart looks the same on the card and in the
+## book. `s` is roughly the half-size.
+func _draw_heart(c: Vector2, s: float, col: Color) -> void:
+	var r := 0.5 * s
+	var ly := c.y - 0.30 * s
+	var lx := 0.50 * s
+	draw_circle(Vector2(c.x - lx, ly), r, col)
+	draw_circle(Vector2(c.x + lx, ly), r, col)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(c.x - lx - r, ly), Vector2(c.x + lx + r, ly), Vector2(c.x, c.y + 0.95 * s),
+	]), col)
 
 
 ## Rounded background panel with a colored border, shared by every card.
@@ -222,21 +305,30 @@ func _draw_rounded_panel(rect: Rect2, bg: Color, border: Color, border_w: float,
 	draw_style_box(sb, rect)
 
 
+## Card height, shared by the drawing and the sell-button placement so they can't
+## drift. Turrets reserve the top strip for the priority button; every trap
+## reserves the bottom strip for the sell button. `has_priority` = a turret whose
+## targeting can actually be changed (not a 'simple' fixed one like the Dart).
+func _trap_card_height(has_priority: bool) -> float:
+	return (56.0 if has_priority else 8.0) + 96.0 + 42.0
+
+
 ## The trap card. Its whole reason for existing is the priority button at the
-## top — everything below it is context for that one decision.
+## top — everything below it is context for that one decision, and the sell
+## button at the very bottom.
 func _draw_trap_card(t: Trap) -> void:
 	var f := ThemeDB.fallback_font
 	var d := t.data
-	var is_turret := d.kind == TrapData.Kind.TURRET
+	var has_priority := d.kind == TrapData.Kind.TURRET and not d.fixed_targeting
 
-	## Leave room for the button when it's showing.
-	var top := 56.0 if is_turret else 8.0
-	var h := top + 96.0
+	## Leave room for the button only when it's showing.
+	var top := 56.0 if has_priority else 8.0
+	var h := _trap_card_height(has_priority)
 
 	_draw_rounded_panel(Rect2(Vector2.ZERO, Vector2(W, h)),
 			Color(0.06, 0.05, 0.04, 0.92), Color(d.color, 0.75), 2.0, 10)
 
-	if is_turret:
+	if has_priority:
 		_priority_btn.text = "Target: %s   (tap to change)" % Trap.targeting_name(
 				t.targeting)
 
@@ -285,9 +377,12 @@ func _draw_card(lines: Array, title: String, col: Color, hp: float,
 	var bw := W - PAD * 2.0
 	draw_rect(Rect2(bar, Vector2(bw, 12.0)), Color(0, 0, 0, 0.6))
 	draw_rect(Rect2(bar, Vector2(bw * pct, 12.0)), hp_col)
-	draw_string(f, Vector2(PAD, PAD + 56.0),
-			"%d / %d HP" % [int(maxf(hp, 0.0)), int(max_hp)],
+	## Counter reads "42 / 42 ♥" — the heart replaces the "HP" label.
+	var hp_text := "%d / %d" % [int(maxf(hp, 0.0)), int(max_hp)]
+	draw_string(f, Vector2(PAD, PAD + 56.0), hp_text,
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Color(0.85, 0.85, 0.85))
+	var tw := f.get_string_size(hp_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 14).x
+	_draw_heart(Vector2(PAD + tw + 9.0, PAD + 51.0), 6.0, Color(0.93, 0.26, 0.33))
 
 	var y := PAD + 76.0
 	for entry in lines:

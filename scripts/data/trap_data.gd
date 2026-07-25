@@ -34,6 +34,19 @@ enum Targeting {
 
 @export var targeting: Targeting = Targeting.FIRST
 
+## "Simple" traps: their targeting is locked and the inspector offers no "tap to
+## change" button. The Dart Launcher is one — it just shoots whoever's in front.
+@export var fixed_targeting: bool = false
+
+## Explosive turrets damage every OTHER hero within this radius of the one they
+## shot, at SPLASH_FALLOFF strength. 0 = single target, like the crossbow.
+@export var splash_radius: float = 0.0
+
+## Which drawn shape to use when `icon` is null. Without this every TURRET draws
+## the same box-and-barrel, so four different turrets would be unreadable in the
+## tray. Ignored when real art is assigned.
+@export var glyph: String = ""
+
 ## Weaken / Rot: +damage taken, -healing received. No targeting needed.
 @export var weaken_damage_bonus: float = 0.0
 @export var weaken_heal_cut: float = 0.0

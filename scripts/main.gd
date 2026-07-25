@@ -9,6 +9,12 @@ enum Phase { BUILD, COMBAT, WON, LOST }
 
 const DESIGN := Vector2(720, 1280)
 
+## Banner colours for the win summary. Deliberately outside the ColorScheme
+## palette — these encode "you won this" / "you lost this", which shouldn't
+## change meaning when the player picks a different theme.
+const WIN_GREEN := "#5bd87a"
+const LOSS_RED := "#ff5c4d"
+
 var phase: Phase = Phase.BUILD
 var wave_index: int = 0
 var build_timer: float = 0.0
@@ -26,7 +32,10 @@ var _escape_curve: Curve2D = null
 var _build_nodes: Array = []
 var _selected_trap: String = ""
 var _hover_node: int = -1
-var _fast: bool = false
+var _speed: int = 1        ## 1x / 2x / 3x
+
+const SPEED_MIN := 1
+const SPEED_MAX := 3
 
 const ROAD_HALF_WIDTH := 25.0
 const COMMAND_REACH := 45.0   ## click within this of the path to post; else deselect
@@ -54,11 +63,12 @@ func _ready() -> void:
 	add_child(_hud)
 	_hud.unleash_pressed.connect(_unleash)
 	_hud.pause_pressed.connect(_toggle_pause)
-	_hud.speed_pressed.connect(_toggle_speed)
+	_hud.speed_step_pressed.connect(_step_speed)
 	_hud.trap_selected.connect(func(id: String): _selected_trap = id)
-	_hud.switch_board_pressed.connect(_on_switch_board)
+	_hud.board_step_pressed.connect(_on_switch_board)
 	_hud.trap_slots_changed.connect(_on_trap_slots_changed)
 	_hud.antihero_selected.connect(_on_antihero_selected)
+	_hud.trap_sell_pressed.connect(_on_sell_trap)
 	_hud.store_recruit.connect(_on_store_recruit)
 	_hud.store_buy_gold.connect(_on_store_buy_gold)
 	_hud.store_buy_souls.connect(_on_store_buy_souls)
@@ -70,7 +80,7 @@ func _ready() -> void:
 	EventBus.hoard_empty.connect(_on_hoard_empty)
 	EventBus.hoard_changed.connect(_on_hoard_changed)
 	EventBus.minion_arrived.connect(func(d: MinionData):
-			_hud.say("%s joins you. It smelled the gold." % d.display_name))
+			_hud.say("%s joins you. It smelled the Gold." % d.display_name))
 	EventBus.minion_deserted.connect(func(d: MinionData):
 			_hud.say("%s walks out. Your pile isn't impressive anymore." % d.display_name))
 	EventBus.minion_reinforced.connect(func(d: MinionData, n: int):
@@ -94,7 +104,11 @@ func _load_board() -> void:
 	wave_index = 0
 	_selected_trap = ""
 	_hover_node = -1
-	Engine.time_scale = 2.0 if _fast else 1.0
+	Engine.time_scale = float(_speed)
+	## The centre banner is the one piece of board state that isn't rebuilt below —
+	## a WON/LOST result from the previous board would otherwise sit over the new
+	## one, reporting numbers EconomySystem.reset() has already cleared.
+	_hud.set_message("")
 
 	_build_curve()
 
@@ -131,8 +145,8 @@ func _load_board() -> void:
 	_start_build_phase()
 
 
-func _on_switch_board() -> void:
-	GameData.next_board()
+func _on_switch_board(delta: int) -> void:
+	GameData.step_board(delta)
 	_load_board()
 	_hud.say("Now playing: %s" % GameData.board()["name"])
 
@@ -438,7 +452,11 @@ func _start_build_phase() -> void:
 	if wave_index >= GameData.wave_count():
 		phase = Phase.WON
 		EventBus.level_won.emit(EconomySystem.hoard)
-		_hud.set_message("HOARD DEFENDED\n%d gold kept\n%d gold stolen" % [EconomySystem.hoard, EconomySystem.gold_lost])
+		## Win banner reads at a glance from colour alone: the headline and what you
+		## kept in green, what walked out the door in red. Fixed hex rather than
+		## palette colours — green/red mean won/lost here, not "current theme".
+		_hud.set_message(("[color=%s]HOARD DEFENDED[/color]\n[color=%s]%d Gold kept[/color]\n[color=%s]%d Gold stolen[/color]"
+				% [WIN_GREEN, WIN_GREEN, EconomySystem.hoard, LOSS_RED, EconomySystem.gold_lost]))
 		_refresh()
 		return
 	phase = Phase.BUILD
@@ -520,18 +538,18 @@ func _on_hero_died(hero: Node, carried_gold: int) -> void:
 
 	if carried_gold <= 0:
 		if h != null and h.data.bounty > 0:
-			_hud.say("Plundered %d gold." % h.data.bounty)
+			_hud.say("Plundered %d Gold." % h.data.bounty)
 		return
 
 	var coin := Coin.new()
 	coin.setup(hero2d.position, GameData.vault_pos(), carried_gold, false)
 	_world.add_child(coin)
-	_hud.say("Recovered %d gold — and plundered %d more." % [carried_gold, h.data.bounty if h != null else 0])
+	_hud.say("Recovered %d Gold — and plundered %d more." % [carried_gold, h.data.bounty if h != null else 0])
 
 
 func _on_hero_escaped(_hero: Node, stolen: int) -> void:
 	if stolen > 0:
-		_hud.say("ROBBED. %d gold gone for good." % stolen)
+		_hud.say("ROBBED. %d Gold gone for good." % stolen)
 
 
 # --- Input -----------------------------------------------------------------
@@ -548,7 +566,7 @@ func _unhandled_input(event: InputEvent) -> void:
 					_toggle_pause()
 					return
 				KEY_F:
-					_toggle_speed()
+					_cycle_speed()
 					return
 
 	if event is InputEventMouseMotion:
@@ -581,14 +599,28 @@ func _toggle_window_orientation() -> void:
 func _toggle_pause() -> void:
 	var tree := get_tree()
 	tree.paused = not tree.paused
-	_hud.set_controls(tree.paused, _fast)
+	_hud.set_controls(tree.paused, _speed)
+	## A finished level already owns the banner. Writing PAUSED over a WON/LOST
+	## summary would replace it, and unpausing would then clear it for good — the
+	## scrim and the play/pause glyph still show the state.
+	if phase == Phase.WON or phase == Phase.LOST:
+		return
 	_hud.set_message("PAUSED" if tree.paused else "")
 
 
-func _toggle_speed() -> void:
-	_fast = not _fast
-	Engine.time_scale = 2.0 if _fast else 1.0
-	_hud.set_controls(get_tree().paused, _fast)
+## Spinner arrows clamp; the F key cycles round so one key still reaches every speed.
+func _step_speed(delta: int) -> void:
+	_set_speed(clampi(_speed + delta, SPEED_MIN, SPEED_MAX))
+
+
+func _cycle_speed() -> void:
+	_set_speed(SPEED_MIN if _speed >= SPEED_MAX else _speed + 1)
+
+
+func _set_speed(value: int) -> void:
+	_speed = clampi(value, SPEED_MIN, SPEED_MAX)
+	Engine.time_scale = float(_speed)
+	_hud.set_controls(get_tree().paused, _speed)
 
 
 func _tap(design_pos: Vector2) -> void:
@@ -668,7 +700,7 @@ func _on_store_buy_gold() -> void:
 		_hud.say("Not enough gems.")
 		return
 	EconomySystem.add_gold(Bank.GOLD_REFILL)
-	_hud.say("+%d gold to the hoard." % Bank.GOLD_REFILL)
+	_hud.say("+%d Gold to the hoard." % Bank.GOLD_REFILL)
 	_hud.refresh_store()
 
 
@@ -731,13 +763,50 @@ func _node_at(design_pos: Vector2) -> int:
 	return -1
 
 
+## Sell a placed trap: refund part of its cost, free the build slot it sat on, and
+## remove it. The trap doesn't store its slot index, so match the slot by position
+## (the trap was placed exactly on the node).
+func _on_sell_trap(trap: Node2D) -> void:
+	if trap == null or not is_instance_valid(trap):
+		return
+	var t := trap as Trap
+	if t == null:
+		return
+	var refund := Trap.sell_value(t.data)
+	## Free the slot the trap sat on. Match the NEAREST occupied node rather than an
+	## exact position hit: the trap is placed on its node, so the closest occupied
+	## node is always its own, and this survives any float drift or node re-indexing
+	## from an earlier trap-slot change. Missing the match would strand the slot as
+	## permanently occupied — no marker, unbuildable.
+	var best_i := -1
+	var best_d := INF
+	for i in _build_nodes.size():
+		if not _build_nodes[i]["occupied"]:
+			continue
+		var d: float = _build_nodes[i]["pos"].distance_to(t.position)
+		if d < best_d:
+			best_d = d
+			best_i = i
+	if best_i >= 0:
+		_build_nodes[best_i]["occupied"] = false
+	EconomySystem.add_gold(refund)
+	_select(null)   ## drops the inspector before the node is freed
+	t.queue_free()
+	_hud.say("Sold %s  (+%d Gold)" % [t.data.display_name, refund])
+	_allure.update_restless_flags()
+	if _board != null:
+		_board.build_nodes = _build_nodes
+		_board.queue_redraw()
+	_refresh()
+
+
 func _try_build(idx: int) -> void:
 	if _selected_trap == "":
 		_hud.say("Pick a trap first.")
 		return
 	var d: TrapData = GameData.traps[_selected_trap]
 	if not EconomySystem.can_afford(d.cost):
-		_hud.say("Not enough gold in the vault.")
+		_hud.say("Not enough Gold in the vault.")
 		return
 	EconomySystem.spend(d.cost)
 	var t := Trap.new()
@@ -772,7 +841,7 @@ func _refresh() -> void:
 	var wave_text := ""
 	match phase:
 		Phase.BUILD:
-			wave_text = "BUILD — wave %d/%d  ·  tap UNLEASH\nIncoming: %s" % [wave_index + 1, GameData.wave_count(), _wave_summary(wave_index)]
+			wave_text = "BUILD — wave %d/%d  ·  tap START\nIncoming: %s" % [wave_index + 1, GameData.wave_count(), _wave_summary(wave_index)]
 		Phase.COMBAT:
 			wave_text = "WAVE %d/%d — %d heroes in the dungeon  ·  you can still build" % [wave_index + 1, GameData.wave_count(), _heroes_remaining()]
 
