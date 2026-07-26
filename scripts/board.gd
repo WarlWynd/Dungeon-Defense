@@ -207,12 +207,28 @@ const VAULT_TEX_SIZE := Vector2(200, 194)
 ## 841px to 200px by the sampler every frame shimmers as the board moves; baking
 ## the shrink once kills that, and the spare 2x keeps the masonry crisp.
 const VAULT_TEX_OVERSAMPLE := 2.0
-## How dark the room goes as the hoard leaves. The art's coin piles are painted
-## in and can't be carried away the way the drawn stacks are, so the light going
-## out of the room is what shows the vault emptying instead.
-const VAULT_DARK_EMPTY := 0.50
+## How dark the room goes as the hoard leaves. Backs up the stacks below rather
+## than carrying the signal alone, so it stops well short of black — an unreadable
+## room is worse than an undramatic one.
+const VAULT_DARK_EMPTY := 0.60
+
+## Where the countable stacks sit ON the art: a grid across the chamber's front
+## floor, between the chest and the door. The art's own coin piles are painted in
+## and can't be carried away, so THESE are the ones that actually drain — one
+## stack per twelfth of the hoard, the same signal the drawn chest gives.
+##
+## Chamber-local pixels, origin at the middle of the room. TWO CLUSTERS, one
+## either side of the door: the floor there is open flagstone, and a grid laid
+## straight across the middle buries the one part of the room the thieves
+## actually walk through. Read these off the art if it is ever redrawn.
+const ROOM_HOARD_COLS := [-46.0, -30.0, 28.0, 42.0]
+const ROOM_HOARD_ROWS := [40.0, 26.0, 12.0]       ## front of the room to the back
+## Stacks are cut down on the art — the chamber is far wider than the drawn chest,
+## so coins at full size read as boulders sitting on the flagstones.
+const ROOM_HOARD_SCALE := 0.85
 
 const GOLD := Color(1.0, 0.82, 0.22)
+const GOLD_DARK := Color(0.62, 0.40, 0.06)
 ## Layers in the vault's glow. More is smoother and costs one polygon each.
 const GLOW_RINGS := 5
 
@@ -256,6 +272,27 @@ func _draw_loot_chamber(s: ColorScheme, frac: float) -> void:
 	var lit := lerpf(VAULT_DARK_EMPTY, 1.0, frac)
 	draw_texture_rect(_vault_tex, Rect2(-VAULT_TEX_SIZE * 0.5, VAULT_TEX_SIZE), false,
 			Color(lit, lit, lit, 1.0))
+	## Drawn at FULL brightness over a room that dims: the stacks are the live
+	## hoard, and the one thing on this part of the board that must stay legible
+	## when the vault is nearly out.
+	_draw_room_hoard(frac)
+
+
+## The countable stacks standing on the chamber floor. Same back-to-front order
+## and the same twelve as the drawn chest, so the two read identically.
+func _draw_room_hoard(frac: float) -> void:
+	var total := VAULT_COLS * VAULT_ROWS
+	var shown := int(ceil(frac * float(total)))
+	for i in total:
+		if i >= shown:
+			break
+		var cx: int = i % VAULT_COLS
+		## Row 0 is drawn first and drains LAST: the pile empties from the front of
+		## the room, the way it always has.
+		var cy: int = i / VAULT_COLS
+		var x: float = ROOM_HOARD_COLS[cx] + (4.0 if cy % 2 == 1 else -4.0)
+		var y: float = ROOM_HOARD_ROWS[ROOM_HOARD_ROWS.size() - 1 - cy]
+		_draw_gold_stack(Vector2(x, y), 3 + (i % 3), ROOM_HOARD_SCALE)
 
 
 ## The glow of a full vault, dying as the pile is carried out the door. Pulled
@@ -361,16 +398,26 @@ func _draw_hoard(frac: float, hw: float) -> void:
 
 
 ## A pile of coin edges, tapering as it rises. Drawn in whatever transform the
-## caller has set — the chest sets one screen-upright transform for everything.
-func _draw_gold_stack(p: Vector2, coins: int) -> void:
-	var gold := Color(1.0, 0.82, 0.22)
-	var edge := Color(0.55, 0.38, 0.05)
+## caller has set — the vault sets one screen-upright transform for everything.
+func _draw_gold_stack(p: Vector2, coins: int, scale: float = 1.0) -> void:
+	## A shadow at the foot of the stack. The drawn chest doesn't need it — its
+	## mouth is flat black — but the art's floor is busy, and without this the
+	## coins look pasted over the flagstones rather than standing on them.
+	draw_colored_polygon(_ellipse(p + Vector2(0.0, 1.0 * scale),
+			Vector2(10.0 * scale, 3.4 * scale), 14), Color(0, 0, 0, 0.38))
 	for i in coins:
-		var w := 16.0 - 1.7 * float(i)
-		var y := p.y - 4.2 * float(i)
-		var r := Rect2(Vector2(p.x - w * 0.5, y - 4.0), Vector2(w, 4.6))
-		draw_rect(r, gold)
-		draw_rect(r, edge, false, 1.0)
+		var t := float(i) / float(maxi(coins - 1, 1))     ## 0 at the base, 1 on top
+		var w := (16.0 - 1.7 * float(i)) * scale
+		var y := p.y - 4.2 * float(i) * scale
+		var r := Rect2(Vector2(p.x - w * 0.5, y - 4.0 * scale), Vector2(w, 4.6 * scale))
+		## Dark at the base, bright at the top. Flat gold on every coin fuses the
+		## rects into one cream-coloured block once the stack is small on screen.
+		draw_rect(r, GOLD_DARK.lerp(GOLD, t))
+		## Each coin's shadowed underside. A drawn line, not an outline: a 1px
+		## stroke is under a screen pixel at board scale and disappears, and the
+		## separation between coins is the whole reason a stack reads as coins.
+		draw_rect(Rect2(r.position + Vector2(0.0, r.size.y - 1.4 * scale),
+				Vector2(r.size.x, 1.4 * scale)), GOLD_DARK.darkened(0.45))
 
 
 ## Filled-polygon ellipse. draw_circle only does circles, and every rounded shape
