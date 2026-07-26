@@ -42,6 +42,8 @@ static func draw(ci: CanvasItem, ctr: Vector2, s: float, kind: String, id: Strin
 	if kind == "minion":
 		match id:
 			"goblin_pack": goblin(ci, ctr, s, col)
+			"troll": troll(ci, ctr, s, col)
+			"ogre": ogre(ci, ctr, s, col)
 			"succubus": succubus(ci, ctr, s, col)
 			"wraith": wraith(ci, ctr, s, col)
 			_: ci.draw_circle(ctr, 8.0 * s, col)
@@ -73,6 +75,46 @@ static func goblin(ci: CanvasItem, ctr: Vector2, s: float, c: Color) -> void:
 	]), c)
 	ci.draw_circle(ctr + Vector2(-2.4, -1.8) * s, 1.5 * s, dark)
 	ci.draw_circle(ctr + Vector2(2.4, -1.8) * s, 1.5 * s, dark)
+
+
+## Hunched brute — heavy shoulders, a head sunk between them, tusks pointing up.
+## Reads WIDE where the goblin reads spiky, so the two never blur together at
+## board size.
+static func troll(ci: CanvasItem, ctr: Vector2, s: float, c: Color) -> void:
+	var dark := Color(0.06, 0.10, 0.06, c.a)
+	ci.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-9.0, -1.5) * s, ctr + Vector2(-6.5, -6.0) * s, ctr + Vector2(6.5, -6.0) * s,
+		ctr + Vector2(9.0, -1.5) * s, ctr + Vector2(7.0, 7.5) * s, ctr + Vector2(-7.0, 7.5) * s,
+	]), c)
+	ci.draw_circle(ctr + Vector2(0.0, -4.5) * s, 4.4 * s, c.lightened(0.12))
+	## Tusks last but one, so they sit in front of the jaw.
+	for e: float in [-1.0, 1.0]:
+		ci.draw_colored_polygon(PackedVector2Array([
+			ctr + Vector2(2.4 * e, -2.4) * s, ctr + Vector2(3.9 * e, -7.6) * s,
+			ctr + Vector2(4.4 * e, -2.2) * s,
+		]), Color(0.92, 0.90, 0.78, c.a))
+	ci.draw_circle(ctr + Vector2(-1.8, -5.6) * s, 1.2 * s, dark)
+	ci.draw_circle(ctr + Vector2(1.8, -5.6) * s, 1.2 * s, dark)
+
+
+## The biggest silhouette on the board, and a CYCLOPS — one eye under a heavy
+## brow. The single eye is the tell: an Ogre can't be mistaken for a Troll even
+## at a glance, which is the whole job of these shapes.
+static func ogre(ci: CanvasItem, ctr: Vector2, s: float, c: Color) -> void:
+	var dark := Color(0.10, 0.07, 0.05, c.a)
+	ci.draw_colored_polygon(PackedVector2Array([
+		ctr + Vector2(-10.0, 0.0) * s, ctr + Vector2(-7.5, -7.5) * s, ctr + Vector2(7.5, -7.5) * s,
+		ctr + Vector2(10.0, 0.0) * s, ctr + Vector2(8.0, 8.5) * s, ctr + Vector2(-8.0, 8.5) * s,
+	]), c)
+	ci.draw_rect(Rect2(ctr + Vector2(-6.5, -5.6) * s, Vector2(13.0, 2.0) * s), dark)
+	ci.draw_circle(ctr + Vector2(0.0, -1.4) * s, 2.8 * s, Color(0.96, 0.93, 0.80, c.a))
+	ci.draw_circle(ctr + Vector2(0.0, -1.4) * s, 1.3 * s, dark)
+	## Lower teeth, jutting up from the jaw.
+	for e: float in [-1.0, 1.0]:
+		ci.draw_colored_polygon(PackedVector2Array([
+			ctr + Vector2(2.0 * e, 6.4) * s, ctr + Vector2(4.4 * e, 6.4) * s,
+			ctr + Vector2(3.2 * e, 2.8) * s,
+		]), Color(0.92, 0.90, 0.78, c.a))
 
 
 static func succubus(ci: CanvasItem, ctr: Vector2, s: float, c: Color) -> void:

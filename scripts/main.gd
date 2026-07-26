@@ -49,6 +49,11 @@ const MINION_POST_OFFSETS := [400.0, 300.0, 205.0, 115.0, 65.0, 35.0]
 ## trap tray + UNLEASH (bottom-right); LEFT covers the Anti-Heroes roster panel
 ## and the inspector panel (both bottom-left); RIGHT is now clear. Tune these if
 ## the HUD layout in hud.gd changes.
+## How much darker the screen behind the board is than the board itself. Both are
+## the same masonry now, so this is the only thing besides the board's rounded
+## border telling you where the playable floor ends. 0.0 makes them identical.
+const BACKDROP_DARKEN := 0.42
+
 const HUD_TOP_RESERVE := 100.0
 const HUD_BOTTOM_RESERVE := 74.0
 const HUD_RIGHT_RESERVE := 0.0
@@ -58,6 +63,8 @@ const HUD_LEFT_RESERVE := 290.0
 func _ready() -> void:
 	## Main is ALWAYS (so pause works); simulation nodes are PAUSABLE.
 	process_mode = Node.PROCESS_MODE_ALWAYS
+
+	_build_backdrop()
 
 	_hud = Hud.new()
 	add_child(_hud)
@@ -69,11 +76,15 @@ func _ready() -> void:
 	_hud.trap_slots_changed.connect(_on_trap_slots_changed)
 	_hud.antihero_selected.connect(_on_antihero_selected)
 	_hud.trap_sell_pressed.connect(_on_sell_trap)
+	_hud.trap_upgrade_pressed.connect(_on_upgrade_trap)
 	_hud.store_recruit.connect(_on_store_recruit)
 	_hud.store_buy_gold.connect(_on_store_buy_gold)
 	_hud.store_buy_souls.connect(_on_store_buy_souls)
 	_hud.store_get_pack.connect(_on_store_get_pack)
 	_hud.store_watch_ad.connect(_on_store_watch_ad)
+	_hud.profile_play.connect(_on_profile_play)
+	_hud.profile_new.connect(_on_profile_new)
+	_hud.profile_erase.connect(_on_profile_erase)
 
 	EventBus.hero_died.connect(_on_hero_died)
 	EventBus.hero_escaped.connect(_on_hero_escaped)
@@ -88,6 +99,45 @@ func _ready() -> void:
 
 	get_viewport().size_changed.connect(_fit_world)
 	_load_board()
+
+
+## The UI backdrop: the dungeon hide that fills every part of the screen the
+## fitted board doesn't cover. It gets its OWN CanvasLayer at -1 so it sits under
+## both the world (layer 0) and the HUD (layer 1) — put inside the HUD it would
+## paint straight over the board instead. Survives board changes, so it's built
+## once here rather than in _load_board.
+func _build_backdrop() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = -1
+	add_child(layer)
+
+	var rect := Control.new()
+	rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	## The tile is resized at runtime and so carries no import flags — repeat has
+	## to be asked for or it would draw once in the corner.
+	rect.texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	rect.draw.connect(_draw_backdrop.bind(rect))
+	layer.add_child(rect)
+
+	## The tint comes from the palette, so the backdrop follows the theme the way
+	## the board does; repaint it when either the palette or the window changes.
+	Settings.color_scheme_changed.connect(func(_i: int): rect.queue_redraw())
+	rect.resized.connect(rect.queue_redraw)
+
+
+## Tiled with the SAME stone the dungeon floor uses, at the same tile size and the
+## same palette tint — then darkened, so the board still reads as the raised
+## surface you build on rather than dissolving into its surroundings.
+func _draw_backdrop(node: Control) -> void:
+	var s: ColorScheme = Settings.scheme()
+	var full := Rect2(Vector2.ZERO, node.size)
+	var tex := GameData.stone_tile()
+	if tex == null:
+		node.draw_rect(full, s.stone_dark.lerp(Board.BG_BLUE, Board.BG_BLUE_MIX))
+		return
+	node.draw_texture_rect(tex, full, true, s.stone.lerp(Board.BG_BLUE, Board.BG_BLUE_MIX))
+	node.draw_rect(full, Color(0, 0, 0, BACKDROP_DARKEN))
 
 
 ## Build or rebuild the whole playfield for the active board.
@@ -130,12 +180,18 @@ func _load_board() -> void:
 	_allure.process_mode = Node.PROCESS_MODE_PAUSABLE
 	_allure.setup(_world, _minion_posts())
 	_allure.set_router(Callable(self, "_route_between"))
+	## The roster list is otherwise only rebuilt by the per-frame _refresh(), which
+	## _process skips while the game is PAUSED and in the WON/LOST phases — so an
+	## Anti-Hero could walk onto the board (bought in the store, or drawn out by a
+	## hoard that just grew) and not appear in the list beside it. This is what the
+	## signal was for; nothing had been listening to it.
+	_allure.roster_changed.connect(_on_roster_changed)
 	add_child(_allure)
 
 	_generate_build_nodes()
 	_board.build_nodes = _build_nodes
 
-	EconomySystem.reset(GameData.STARTING_HOARD)
+	EconomySystem.reset(GameData.STARTING_HOARD, GameData.HOARD_CAPACITY)
 	_allure.refresh_roster()
 
 	if get_tree().paused:
@@ -510,6 +566,13 @@ func _on_hoard_changed(_total: int) -> void:
 		_allure.refresh_arrivals()
 
 
+## Someone arrived, deserted, was reinforced or went restless — repaint the list
+## immediately rather than waiting for a frame that may never come.
+func _on_roster_changed() -> void:
+	if _hud != null:
+		_hud.refresh_roster()
+
+
 func _on_hoard_empty() -> void:
 	if phase == Phase.WON or phase == Phase.LOST:
 		return
@@ -680,11 +743,17 @@ func _on_store_recruit(id: String, currency: String) -> void:
 	var d: MinionData = GameData.minions.get(id)
 	if d == null or Bank.is_unlocked(id):
 		return
+	## A price of 0 means "not sold in this currency" — the Troll, Ogre and Goblins
+	## are gem-only. Without this, spend_souls(0) succeeds and hands them over free.
 	if currency == "gems":
+		if d.recruit_gems <= 0:
+			return
 		if not Bank.spend_gems(d.recruit_gems):
 			_hud.say("Not enough gems.")
 			return
 	else:
+		if d.recruit_souls <= 0:
+			return
 		if not Bank.spend_souls(d.recruit_souls):
 			_hud.say("Not enough souls.")
 			return
@@ -721,6 +790,35 @@ func _on_store_get_pack(pack_id: String) -> void:
 func _on_store_watch_ad() -> void:
 	Bank.watch_ad_for_gems()
 	_hud.refresh_store()
+
+
+# --- Save slots ------------------------------------------------------------
+#
+# Switching character changes which Anti-Heroes are unlocked, so the level is
+# rebuilt from the start rather than left mid-wave with the previous player's
+# roster standing on the board.
+
+func _on_profile_play(index: int) -> void:
+	Bank.use_profile(index)
+	_load_board()
+	_hud.refresh_profiles()
+	_hud.say("Character %d — %d souls, %d gems." % [index + 1, Bank.souls, Bank.gems])
+
+
+func _on_profile_new(index: int) -> void:
+	Bank.new_profile(index)
+	_load_board()
+	_hud.refresh_profiles()
+	_hud.say("Character %d — a fresh start. Nothing recruited, nothing owed." % (index + 1))
+
+
+func _on_profile_erase(index: int) -> void:
+	var was_active := index == Bank.profile
+	Bank.erase_profile(index)
+	if was_active:
+		_load_board()
+	_hud.refresh_profiles()
+	_hud.say("Character %d erased." % (index + 1))
 
 
 func _unit_at(design_pos: Vector2) -> Node2D:
@@ -772,7 +870,7 @@ func _on_sell_trap(trap: Node2D) -> void:
 	var t := trap as Trap
 	if t == null:
 		return
-	var refund := Trap.sell_value(t.data)
+	var refund := t.sell_value()
 	## Free the slot the trap sat on. Match the NEAREST occupied node rather than an
 	## exact position hit: the trap is placed on its node, so the closest occupied
 	## node is always its own, and this survives any float drift or node re-indexing
@@ -797,6 +895,30 @@ func _on_sell_trap(trap: Node2D) -> void:
 	if _board != null:
 		_board.build_nodes = _build_nodes
 		_board.queue_redraw()
+	_refresh()
+
+
+## Upgrade a placed trap in place: pay from the hoard, raise its level. The trap
+## keeps its slot and its targeting — this is the answer when there is nowhere
+## left to build but plenty of Gold to spend.
+func _on_upgrade_trap(trap: Node2D) -> void:
+	if trap == null or not is_instance_valid(trap):
+		return
+	var t := trap as Trap
+	if t == null:
+		return
+	if not t.can_upgrade():
+		_hud.say("%s is already at Lv %d." % [t.data.display_name, Trap.MAX_LEVEL])
+		return
+	var cost := t.next_upgrade_cost()
+	if not EconomySystem.can_afford(cost):
+		_hud.say("Not enough Gold to upgrade the %s." % t.data.display_name)
+		return
+	EconomySystem.spend(cost)
+	t.upgrade(cost)
+	_hud.say("%s is now Lv %d.  (-%d Gold)" % [t.data.display_name, t.level, cost])
+	_hud.refresh_inspector()
+	_allure.update_restless_flags()
 	_refresh()
 
 

@@ -19,13 +19,20 @@ class_name MinionData
 
 @export var count: int = 3
 
-## Allure thresholds: arrive (higher) and desert (lower). The gap is hysteresis.
-## Only used by AUTO units (drawn purely by the size of the hoard).
-@export var allure_arrive: float = 0.5
-@export var allure_desert: float = 0.4
+## Allure thresholds in GOLD: arrive (higher) and desert (lower). The gap is
+## hysteresis, so a hoard hovering on the line doesn't flicker a minion in and
+## out. Only AUTO units are actually gated by these — for BUY/EARN units the
+## arrive figure is just where their marker sits on the hoard bar.
+##
+## These are absolute amounts, NOT fractions of the starting hoard: "a Succubus
+## comes when you have 2000 Gold" is a goal the player can see on the bar and
+## work toward, where "at 75% of what you started with" moves under them every
+## time the starting number is retuned.
+@export var allure_arrive: float = 1000.0
+@export var allure_desert: float = 800.0
 
 ## How this Anti-Hero is acquired:
-##   "auto" — drawn automatically by a rich hoard (the Succubus). Uses allure.
+##   "auto" — drawn out by a rich hoard (Troll, Ogre, Succubus). Uses allure.
 ##   "buy"  — recruited with souls or gems; unlock is permanent.
 ##   "earn" — unlocked by reaching unlock_wave; unlock is permanent.
 ## BUY/EARN units, once unlocked, are always present and never desert.

@@ -7,6 +7,10 @@ var traps: Dictionary = {}
 var minions: Dictionary = {}
 
 const STARTING_HOARD := 1000
+## How much the vault can hold. You start with a tenth of it — the empty nine
+## tenths are the room plunder has to grow into, and the reason the bar is worth
+## watching climb.
+const HOARD_CAPACITY := 10000
 const BUILD_SECONDS := 12.0
 
 ## Boards are DATA. smoothing: 0 = straight/angular, ~0.4 = flowing. type "maze"
@@ -499,8 +503,12 @@ func _build_traps() -> void:
 	dart.icon = _load_png_raw("res://assets/textures/DartTrap.png")
 
 	var crossbow := _trap("crossbow", "Crossbow Turret", TrapData.Kind.TURRET, 110, 13.0, "physical",
-		160.0, 0.55, Color(0.55, 0.35, 0.22), "Points at whoever is nearest.")
+		160.0, 0.55, Color(0.55, 0.35, 0.22),
+		"Shoots whatever is deepest in. Level it and it starts picking.")
 	crossbow.glyph = "crossbow"
+	## Starts dumb: it shoots the lead raider and can't be told otherwise until
+	## Lv 2. The first upgrade buys judgement, not just damage.
+	crossbow.targeting_level = 2
 
 	## The armour answer. A Knight shrugs off 75% of physical; this ignores that
 	## axis entirely and goes at his 0% magic defence instead.
@@ -530,6 +538,50 @@ func _build_traps() -> void:
 		140.0, 1.0, Color(0.55, 0.15, 0.35), "Let them mend it. It won't hold.")
 	brazier.weaken_damage_bonus = 0.30
 	brazier.weaken_heal_cut = 0.60
+
+
+## THE DUNGEON STONE, shrunk to its tiling size. Loaded once and handed to both
+## the board and the screen backdrop behind it, so the two are the same masonry at
+## the same scale rather than two textures that drift apart when either is retuned.
+const STONE_PATH := "res://assets/textures/dungeon_stone.png"
+## The sheet is authored at roughly the size of the whole board, so tiled at its
+## native size a single block comes out as big as a hero. Raise toward 1.0 for
+## bigger blocks, lower for finer cobbles.
+const STONE_TILE_SCALE := 0.25
+
+var _stone_tile: Texture2D = null
+
+
+func stone_tile() -> Texture2D:
+	if _stone_tile == null:
+		_stone_tile = _shrink(load_texture(STONE_PATH), STONE_TILE_SCALE)
+	return _stone_tile
+
+
+## A smaller copy of a texture, for tiling more often. Returns the original
+## unchanged if there's nothing sensible to do — big stone beats no stone.
+func _shrink(tex: Texture2D, factor: float) -> Texture2D:
+	if tex == null or factor <= 0.0 or factor >= 1.0:
+		return tex
+	var img := tex.get_image()
+	if img == null:
+		return tex
+	img.decompress()   ## imported textures can come back VRAM-compressed
+	var w := maxi(int(round(float(img.get_width()) * factor)), 1)
+	var h := maxi(int(round(float(img.get_height()) * factor)), 1)
+	img.resize(w, h, Image.INTERPOLATE_LANCZOS)
+	return ImageTexture.create_from_image(img)
+
+
+## Load a texture whether or not Godot has imported it yet. Prefers the imported
+## resource (mipmaps, compression); falls back to reading the PNG straight off
+## disk, which is what a CLI run on freshly-dropped art needs.
+func load_texture(path: String) -> Texture2D:
+	if ResourceLoader.exists(path):
+		var t := load(path) as Texture2D
+		if t != null:
+			return t
+	return _load_png_raw(path)
 
 
 ## Load a PNG straight off disk into an ImageTexture, bypassing Godot's import
@@ -607,10 +659,14 @@ func _build_minions() -> void:
 	goblins.attack_range = 26.0
 	goblins.count = 3
 	goblins.pursue_thieves_first = true
-	goblins.allure_arrive = 0.50        ## bar-marker position (earned, not hoard-summoned)
-	goblins.allure_desert = 0.40
+	goblins.allure_arrive = 2000.0      ## bar-marker position (earned, not hoard-summoned)
+	goblins.allure_desert = 1600.0
 	goblins.acquire_mode = "earn"       ## EARNED by surviving your first wave
 	goblins.unlock_wave = 1
+	## Gems are a SHORTCUT, never an exclusive: everything with a gem price here can
+	## still be had for free by waiting — clearing the wave, or growing the hoard.
+	## What the gems buy is skipping that, and permanence (see AllureSystem).
+	goblins.recruit_gems = 12
 	goblins.color = Color(0.45, 0.72, 0.35)
 	goblins.radius = 10.0
 	goblins.description = "Three separate goblins, 40 HP each. They chase whoever carries your Gold. A Knight cuts one down in 3s. Earned by clearing wave 1 — loyal for good once earned."
@@ -627,6 +683,76 @@ func _build_minions() -> void:
 	])
 	minions["goblin_pack"] = goblins
 
+	## The two middle rungs of the ladder. Both are AUTO — pulled out of the dark by
+	## the size of the pile, like the Succubus — because that is what makes the
+	## markers on the hoard bar mean something: cross the number, something arrives.
+	## They also both HOLD GROUND (pursue_thieves_first = false), which is the role
+	## nothing else on the roster fills: the Goblins, Succubus and Wraith all chase
+	## whoever is carrying, and a chaser leaves the corridor it was standing in.
+	var troll := MinionData.new()
+	troll.id = "troll"
+	troll.display_name = "Troll"
+	troll.unit_name = "Troll"
+	troll.max_hp = 150.0
+	troll.speed = 82.0
+	troll.damage = 13.0
+	troll.attack_rate = 1.1
+	troll.attack_range = 30.0
+	troll.count = 1
+	troll.pursue_thieves_first = false
+	troll.allure_arrive = 4000.0
+	troll.allure_desert = 3200.0
+	troll.acquire_mode = "auto"
+	troll.recruit_gems = 30
+	troll.color = Color(0.42, 0.55, 0.34)
+	troll.radius = 14.0
+	troll.description = "150 HP of wall. It doesn't chase anyone — it stands where you put it and makes them come through. Drawn out by a hoard of 4000."
+	troll.strengths = PackedStringArray([
+		"150 HP with no armour to spare — nearly four times a Goblin, and a Knight needs 11s to chew through it.",
+		"Holds its ground instead of chasing, so the corridor you posted it in stays blocked.",
+		"11.8 DPS against unarmoured raiders: it kills a 42 HP Squire in under 4s while soaking their hits.",
+		"Costs nothing but a rich hoard. No souls, no Gold, no wave to clear.",
+	])
+	troll.weaknesses = PackedStringArray([
+		"Physical, so armour guts it: 11.8 DPS becomes 3.0 against a 75%-armour Knight (~44s to kill one).",
+		"82 speed. A fleeing Treasure Hunter moves at 216 — it will never catch anything.",
+		"Deserts below 3200 Gold, and a bad wave takes you there fast.",
+		"One body. Focus it down and the corridor is open again.",
+	])
+	minions["troll"] = troll
+
+	var ogre := MinionData.new()
+	ogre.id = "ogre"
+	ogre.display_name = "Ogre"
+	ogre.unit_name = "Ogre"
+	ogre.max_hp = 200.0
+	ogre.speed = 70.0
+	ogre.damage = 30.0
+	ogre.attack_rate = 2.0
+	ogre.attack_range = 34.0
+	ogre.count = 1
+	ogre.pursue_thieves_first = false
+	ogre.allure_arrive = 7000.0
+	ogre.allure_desert = 5600.0
+	ogre.acquire_mode = "auto"
+	ogre.recruit_gems = 45
+	ogre.color = Color(0.62, 0.45, 0.30)
+	ogre.radius = 16.0
+	ogre.description = "One swing every 2 seconds, and the swing is 30. The deepest body you can field and the slowest thing on the board. Drawn out by a hoard of 7000."
+	ogre.strengths = PackedStringArray([
+		"30 damage in a single blow — it one-shots nothing the Goblins could kill, then kills it anyway.",
+		"200 HP, the deepest pool of any Anti-Hero. A Knight takes 15s to bring it down.",
+		"34 reach, the longest melee on the roster: it starts hitting before anything else would.",
+		"Holds the corridor rather than chasing, so it never wanders off the ground you gave it.",
+	])
+	ogre.weaknesses = PackedStringArray([
+		"Physical, so armour answers it: 15 DPS drops to 3.8 against a 75%-armour Knight.",
+		"A 2s swing is a 2s WINDOW — a Squire that walks past between blows takes nothing at all.",
+		"70 speed, the slowest unit in the game. It cannot chase, catch, or reposition.",
+		"Deserts below 5600 Gold.",
+	])
+	minions["ogre"] = ogre
+
 	var succubus := MinionData.new()
 	succubus.id = "succubus"
 	succubus.display_name = "Succubus"
@@ -637,8 +763,9 @@ func _build_minions() -> void:
 	succubus.attack_rate = 1.2
 	succubus.attack_range = 24.0
 	succubus.count = 1
-	succubus.allure_arrive = 0.75
-	succubus.allure_desert = 0.65
+	## The only threshold the game actually enforces — she's the sole AUTO unit.
+	succubus.allure_arrive = 8000.0
+	succubus.allure_desert = 6400.0
 	succubus.pursue_thieves_first = true
 	succubus.acquire_mode = "auto"      ## the ONLY automatic one — drawn by a rich hoard
 	succubus.can_charm = true
@@ -648,18 +775,18 @@ func _build_minions() -> void:
 	succubus.charm_power = 0.5
 	succubus.color = Color(0.85, 0.25, 0.55)
 	succubus.radius = 11.0
-	succubus.description = "Drawn only by a rich hoard. She CHARMS a thief into carrying your Gold back for you. Beaten only by purity. Fragile. Protect her."
+	succubus.description = "Drawn only by a rich hoard — 8000 Gold brings her out. She CHARMS a thief into carrying your Gold back for you. Beaten only by purity. Fragile. Protect her."
 	succubus.strengths = PackedStringArray([
 		"Turns a loss into a gain — a charmed thief walks your Gold BACK to the vault instead of out the door.",
 		"Charm ignores HP, armour and magic defence entirely. She beats things she could never kill.",
 		"170 range and a re-roll every 6s, so across a long corridor a coin-flip target falls roughly 78% of the time.",
-		"Arrives free the moment the hoard is rich enough. No souls, no Gold.",
+		"Arrives free the moment the hoard reaches 8000. No souls, no Gold.",
 	])
 	succubus.weaknesses = PackedStringArray([
 		"Barely fights: 4 damage every 1.2s is 3.3 DPS. She cannot kill anything on her own.",
 		"55 HP and no armour — a Knight cuts her down in about 4 seconds. She needs a bodyguard.",
 		"Beaten flat by purity. A Paladin is 100% pure AND blesses its escort to 85%, which switches her off completely.",
-		"The only Anti-Hero that DESERTS: she leaves below 65% hoard, exactly when things are going badly.",
+		"She DESERTS below 6400 Gold — and being the dearest of the hoard-drawn monsters, she is the first one out the door when things go badly.",
 	])
 	minions["succubus"] = succubus
 
@@ -676,8 +803,8 @@ func _build_minions() -> void:
 	wraith.attack_range = 28.0
 	wraith.count = 1
 	wraith.pursue_thieves_first = true
-	wraith.allure_arrive = 0.90         ## bar-marker position (bought, not hoard-summoned)
-	wraith.allure_desert = 0.85
+	wraith.allure_arrive = 9000.0       ## bar-marker position (bought, not hoard-summoned)
+	wraith.allure_desert = 7200.0
 	wraith.acquire_mode = "buy"
 	wraith.recruit_souls = 25
 	wraith.recruit_gems = 30

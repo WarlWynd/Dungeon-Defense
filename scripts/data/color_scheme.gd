@@ -70,8 +70,16 @@ static func index_of(nm: String) -> int:
 	return -1
 
 
-## Text flips to near-black on a light panel (Sandstone), so a pale scheme stays
-## readable without a second set of hand-picked values.
+## How far the body text is pulled toward the palette's accent. 0 would give every
+## dark scheme the SAME off-white — which is what used to happen, and why picking
+## a palette appeared to do nothing to the buttons. Push it toward 1.0 for louder,
+## more coloured text; keep it well under 1.0 so text never becomes the accent and
+## loses its contrast against the panel.
+const TEXT_TINT := 0.45
+
+## Text starts near-black on a light panel (Sandstone) and near-white on a dark
+## one, then takes the accent's hue — so Crypt Moss reads green, Blood Moon reads
+## red, and the whole UI moves with the pick instead of just the borders.
 static func _derive(nm: String, accent_c: Color, stone_c: Color, floor_c: Color, panel_c: Color) -> ColorScheme:
 	var s := ColorScheme.new()
 	s.display_name = nm
@@ -81,7 +89,8 @@ static func _derive(nm: String, accent_c: Color, stone_c: Color, floor_c: Color,
 	s.floor_col = floor_c
 
 	var light_ui: bool = panel_c.get_luminance() > 0.45
-	s.text = Color(0.09, 0.08, 0.07) if light_ui else Color(0.93, 0.92, 0.90)
+	var base := Color(0.09, 0.08, 0.07) if light_ui else Color(0.93, 0.92, 0.90)
+	s.text = base.lerp(accent_c, TEXT_TINT)
 	s.dim = s.text.lerp(panel_c, 0.45)
 	s.button = panel_c.lerp(Color.BLACK if light_ui else Color.WHITE, 0.12)
 	s.button_hover = s.button.lerp(accent_c, 0.35)

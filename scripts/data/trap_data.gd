@@ -38,6 +38,16 @@ enum Targeting {
 ## change" button. The Dart Launcher is one — it just shoots whoever's in front.
 @export var fixed_targeting: bool = false
 
+## The level at which this trap earns the right to CHOOSE. Below it the turret
+## shoots its default priority and the inspector offers no button; 1 means it can
+## choose from the moment it's built. Ignored entirely when fixed_targeting is on,
+## which is a permanent "never".
+##
+## This is a reason to upgrade that isn't a bigger number — the Crossbow starts
+## dumb and becomes able to answer "the healer is at the back" only once you've
+## paid to level it.
+@export var targeting_level: int = 1
+
 ## Explosive turrets damage every OTHER hero within this radius of the one they
 ## shot, at SPLASH_FALLOFF strength. 0 = single target, like the crossbow.
 @export var splash_radius: float = 0.0

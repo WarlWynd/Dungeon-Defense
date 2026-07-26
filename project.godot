@@ -38,4 +38,6 @@ window/handheld/orientation=4
 
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
-environment/defaults/default_clear_color=Color(0.129412, 0.588235, 0.952941, 1)
+; Near-black, matching the backdrop texture (see Main._build_backdrop). Anything
+; the backdrop doesn't cover for a frame reads as dungeon, not as engine blue.
+environment/defaults/default_clear_color=Color(0.043137, 0.043137, 0.047059, 1)

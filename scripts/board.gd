@@ -4,7 +4,6 @@ class_name Board
 ## Draws the dungeon: stone, path/maze, vault, entrance, build nodes. Lives
 ## under the World node so it inherits the fit-and-rotate transform.
 
-const STONE_PATH := "res://assets/textures/dungeon_stone.png"
 ## Optional build-slot art. Drop a texture here and it replaces the placeholder
 ## square below with no other code changes.
 const SLOT_TEX_PATH := "res://assets/textures/build_slot.png"
@@ -17,6 +16,16 @@ const STONE_SCRIM := Color(0, 0, 0, 0.18)
 const BG_BLUE := Color(0.52, 0.66, 0.86)
 const BG_BLUE_MIX := 0.7
 
+## The dungeon is a CARD sitting on the backdrop, not a full-bleed rectangle:
+## rounded corners and a thin outline, matching the panels in the HUD. The border
+## follows the palette accent — the Inspector's own outline is the colour of the
+## unit it's describing, so there's no single "info window colour" to copy, and
+## the accent is what every other panel in the UI is bordered with.
+const BOARD_SIZE := Vector2(720, 1280)
+const BOARD_CORNER := 34.0
+const BOARD_BORDER_W := 2.0
+const BOARD_BORDER_ALPHA := 0.75
+
 var curve: Curve2D
 var maze: Maze = null              ## set on maze boards; null otherwise
 var build_nodes: Array = []
@@ -28,8 +37,10 @@ var _slot_tex: Texture2D
 
 
 func _ready() -> void:
-	if ResourceLoader.exists(STONE_PATH):
-		_stone = load(STONE_PATH) as Texture2D
+	## A runtime-resized texture carries no import flags, so repeat has to be asked
+	## for here or the shrunken stone would draw once and leave the rest bare.
+	texture_repeat = CanvasItem.TEXTURE_REPEAT_ENABLED
+	_stone = GameData.stone_tile()
 	if ResourceLoader.exists(SLOT_TEX_PATH):
 		_slot_tex = load(SLOT_TEX_PATH) as Texture2D
 
@@ -74,20 +85,63 @@ func _draw_tunnel(a: Vector2, b: Vector2, w: float, col: Color) -> void:
 
 func _draw_stone() -> void:
 	var s: ColorScheme = Settings.scheme()
-	var board := Rect2(Vector2.ZERO, Vector2(720, 1280))
+	var board := Rect2(Vector2.ZERO, BOARD_SIZE)
+	var shape := _rounded_rect(board, BOARD_CORNER)
 	## Lighter-blue background so the blue Gem glyph stands out over the board.
 	var bg := s.stone.lerp(BG_BLUE, BG_BLUE_MIX)
+
 	if _stone == null:
-		draw_rect(board, s.stone_dark.lerp(BG_BLUE, BG_BLUE_MIX))
-		return
-	draw_texture_rect(_stone, board, true, bg)
-	draw_rect(board, STONE_SCRIM)
-	for i in 5:
-		var inset := float(i) * 9.0
-		var a := 0.05 * (5.0 - float(i)) / 5.0
-		draw_rect(Rect2(Vector2(inset, inset),
-				Vector2(720.0 - inset * 2.0, 1280.0 - inset * 2.0)),
-				Color(0, 0, 0, a), false, 18.0)
+		draw_colored_polygon(shape, s.stone_dark.lerp(BG_BLUE, BG_BLUE_MIX))
+	else:
+		## Tiled through a POLYGON rather than draw_texture_rect, because that
+		## can only fill a square rectangle — the UVs repeat the sheet at exactly
+		## its own size, which is what tile=true was doing before.
+		var tile := Vector2(float(_stone.get_width()), float(_stone.get_height()))
+		var uvs := PackedVector2Array()
+		for p in shape:
+			uvs.append(p / tile)
+		draw_colored_polygon(shape, bg, uvs, _stone)
+		draw_colored_polygon(shape, STONE_SCRIM)
+		## Vignette: concentric rounded outlines, corner radius shrinking with the
+		## inset so they stay parallel to the edge instead of cutting the corners.
+		for i in 5:
+			var inset := float(i) * 9.0
+			var a := 0.05 * (5.0 - float(i)) / 5.0
+			_stroke_rounded(board.grow(-inset), maxf(BOARD_CORNER - inset, 4.0),
+					Color(0, 0, 0, a), 18.0)
+
+	## The outline, inset by half its width so it sits fully on the board.
+	_stroke_rounded(board.grow(-BOARD_BORDER_W * 0.5), BOARD_CORNER - BOARD_BORDER_W * 0.5,
+			Color(s.accent, BOARD_BORDER_ALPHA), BOARD_BORDER_W)
+
+
+## Closed rounded-rectangle outline.
+func _stroke_rounded(rect: Rect2, radius: float, col: Color, width: float) -> void:
+	var pts := _rounded_rect(rect, radius)
+	pts.append(pts[0])
+	draw_polyline(pts, col, width)
+
+
+## Perimeter of `rect` with quarter-circle corners of `radius`, clockwise from the
+## top-left. Enough segments per corner that the curve reads as smooth at the
+## scale the board is drawn.
+func _rounded_rect(rect: Rect2, radius: float, seg: int = 8) -> PackedVector2Array:
+	var r: float = clampf(radius, 0.0, minf(rect.size.x, rect.size.y) * 0.5)
+	var pts := PackedVector2Array()
+	var centers := [
+		rect.position + Vector2(r, r),                                   # top-left
+		rect.position + Vector2(rect.size.x - r, r),                     # top-right
+		rect.position + Vector2(rect.size.x - r, rect.size.y - r),       # bottom-right
+		rect.position + Vector2(r, rect.size.y - r),                     # bottom-left
+	]
+	var starts := [PI, PI * 1.5, 0.0, PI * 0.5]
+	for ci in 4:
+		var center: Vector2 = centers[ci]
+		var a0: float = starts[ci]
+		for si in seg + 1:
+			var a: float = a0 + (PI * 0.5) * float(si) / float(seg)
+			pts.append(center + Vector2(cos(a), sin(a)) * r)
+	return pts
 
 
 func _draw_path() -> void:

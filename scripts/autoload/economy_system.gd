@@ -9,20 +9,47 @@ var starting_hoard: int = 0
 var gold_lost: int = 0          ## carried out the front door — gone
 var total_plundered: int = 0    ## looted from corpses — the only growth
 
+## What the vault could hold if you filled it — the number the HUD bar counts
+## toward. Deliberately NOT the same as `starting_hoard`: you begin with a corner
+## of a vault built for far more, so plundering has somewhere visible to go, and
+## the Anti-Hero thresholds (plain Gold amounts on MinionData) have room to sit
+## above where you start.
+var capacity: int = 0
 
-func reset(start_amount: int) -> void:
+
+func reset(start_amount: int, capacity_amount: int = 0) -> void:
 	starting_hoard = start_amount
 	hoard = start_amount
+	capacity = maxi(capacity_amount, start_amount)
 	gold_lost = 0
 	total_plundered = 0
 	EventBus.hoard_changed.emit(hoard)
 
 
-## Fraction of the STARTING hoard still in the vault — the Allure rating.
+## Fraction of the STARTING hoard still in the vault. Drives the vault room's coin
+## stacks, so emptying the pile you began with visibly empties the room. Allure no
+## longer reads this — minions are called by absolute Gold amounts.
 func hoard_fraction() -> float:
 	if starting_hoard <= 0:
 		return 0.0
 	return float(hoard) / float(starting_hoard)
+
+
+## How full the vault itself is, 0..1 — what the HUD bar fills to. Clamped, so a
+## hoard that outgrows its capacity overflows the number, never the bar.
+func capacity_fraction() -> float:
+	if capacity <= 0:
+		return 0.0
+	return clampf(float(hoard) / float(capacity), 0.0, 1.0)
+
+
+## Where a given AMOUNT of gold sits along the bar, 0..1. The Allure ticks are
+## authored as fractions of the starting hoard, so this is what puts them at the
+## right place on a bar that measures capacity.
+func bar_position(amount: float) -> float:
+	if capacity <= 0:
+		return 0.0
+	return clampf(amount / float(capacity), 0.0, 1.0)
 
 
 func can_afford(amount: int) -> bool:

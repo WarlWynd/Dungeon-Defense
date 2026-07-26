@@ -12,6 +12,44 @@ var _muzzle: Vector2 = Vector2.ZERO
 var targeting: TrapData.Targeting = TrapData.Targeting.FIRST
 var selected: bool = false
 
+## LEVELS. A trap you already own can be made better instead of building another
+## one — which matters because build slots are scarce and Gold isn't. The level
+## lives on the PLACED trap, never on TrapData: every trap of a kind shares one
+## TrapData instance, so writing scaled numbers back into it would upgrade the
+## whole board at once. All the effective stats below are data * level.
+var level: int = 1
+
+## Gold sunk into this trap so far (build cost + every upgrade). Sell refunds a
+## fraction of THIS, so upgrading is never a way to lose the money outright.
+var invested: int = 0
+
+const MAX_LEVEL := 5
+
+## Per-level scaling, all measured off the LEVEL 1 stat so the steps stay even.
+const LVL_DAMAGE_STEP := 0.35     ## +35% of base damage per level
+const LVL_RATE_STEP := 0.08       ## -8% cooldown per level (it also fires faster)
+const LVL_RANGE_STEP := 0.06      ## +6% reach per level
+const LVL_SPLASH_STEP := 0.08     ## +8% blast radius per level
+const LVL_SLOW_STEP := 0.06       ## additive; a % point is a % point
+const LVL_SLOW_CAP := 0.85        ## never a full stop
+const LVL_ROT_STEP := 0.30        ## +30% of the base damage-taken bonus per level
+const LVL_HEALCUT_STEP := 0.07    ## additive
+const LVL_HEALCUT_CAP := 0.95
+
+## Upgrading from level L to L+1 costs cost * (BASE + STEP * L) — so each level
+## is dearer than the last, and a cheap trap stays cheap to grow.
+##
+## PRICED AGAINST THE HOARD, NOT AGAINST ITSELF. The hoard is ~1000 and a level
+## barely refills it (a wave of six Squires is 42 Gold of bounty), so the whole
+## level's budget is six to nine traps. These numbers put a trap taken all the
+## way to Lv 5 at 2.9x its build cost — the same multiple as the DPS it gains, so
+## upgrading and building duplicates cost about the same per point of damage, and
+## the build SLOT saved is what makes upgrading the better deal on a cramped
+## board. A Crossbow: 55, 72, 88, 105 — 320 on top of its 110, comfortably inside
+## a starting hoard instead of eating two thirds of it.
+const UPGRADE_COST_BASE := 0.35
+const UPGRADE_COST_STEP := 0.15
+
 ## Splash damage as a fraction of the direct hit.
 const SPLASH_FALLOFF := 0.6
 
@@ -31,18 +69,130 @@ var _aim_angle: float = DART_REST_ANGLE
 const SELL_REFUND := 0.6
 
 
-static func sell_value(d: TrapData) -> int:
-	return int(round(float(d.cost) * SELL_REFUND))
+# --- Levels ----------------------------------------------------------------
+#
+# Static so the Inspector and the Bestiary can quote "what would level 4 do?"
+# without a placed trap to ask.
+
+static func damage_at(d: TrapData, lvl: int) -> float:
+	return d.damage * (1.0 + LVL_DAMAGE_STEP * float(lvl - 1))
+
+
+## Seconds between shots — LOWER is better, so this shrinks with level.
+static func fire_rate_at(d: TrapData, lvl: int) -> float:
+	return maxf(0.05, d.fire_rate * (1.0 - LVL_RATE_STEP * float(lvl - 1)))
+
+
+static func range_at(d: TrapData, lvl: int) -> float:
+	return d.attack_range * (1.0 + LVL_RANGE_STEP * float(lvl - 1))
+
+
+static func splash_at(d: TrapData, lvl: int) -> float:
+	if d.splash_radius <= 0.0:
+		return 0.0
+	return d.splash_radius * (1.0 + LVL_SPLASH_STEP * float(lvl - 1))
+
+
+static func slow_at(d: TrapData, lvl: int) -> float:
+	if d.slow_amount <= 0.0:
+		return 0.0
+	return minf(LVL_SLOW_CAP, d.slow_amount + LVL_SLOW_STEP * float(lvl - 1))
+
+
+static func rot_bonus_at(d: TrapData, lvl: int) -> float:
+	return d.weaken_damage_bonus * (1.0 + LVL_ROT_STEP * float(lvl - 1))
+
+
+static func heal_cut_at(d: TrapData, lvl: int) -> float:
+	if d.weaken_heal_cut <= 0.0:
+		return 0.0
+	return minf(LVL_HEALCUT_CAP, d.weaken_heal_cut + LVL_HEALCUT_STEP * float(lvl - 1))
+
+
+## Damage per second at a level — the one number that says whether the upgrade
+## was worth it. Auras have none, and report 0.
+static func dps_at(d: TrapData, lvl: int) -> float:
+	if d.damage <= 0.0:
+		return 0.0
+	return damage_at(d, lvl) / maxf(fire_rate_at(d, lvl), 0.01)
+
+
+## Gold to go from `from_level` to the next one. 0 means it's already maxed.
+static func upgrade_cost(d: TrapData, from_level: int) -> int:
+	if from_level >= MAX_LEVEL:
+		return 0
+	return int(round(float(d.cost) * (UPGRADE_COST_BASE + UPGRADE_COST_STEP * float(from_level))))
+
+
+## What taking one trap from level 1 to MAX_LEVEL costs in total, for the
+## Bestiary's "and then what?" line.
+static func total_upgrade_cost(d: TrapData) -> int:
+	var sum := 0
+	for l in range(1, MAX_LEVEL):
+		sum += upgrade_cost(d, l)
+	return sum
+
+
+func can_upgrade() -> bool:
+	return level < MAX_LEVEL
+
+
+func next_upgrade_cost() -> int:
+	return upgrade_cost(data, level)
+
+
+## Pay for and apply one level. `paid` is what the caller actually spent, so the
+## refund can never claim more than the vault handed over.
+func upgrade(paid: int) -> void:
+	if not can_upgrade():
+		return
+	level += 1
+	invested += paid
+	## A faster trap shouldn't sit out the cooldown the slow version started.
+	_cd = minf(_cd, eff_fire_rate())
+	queue_redraw()
+
+
+## Refund on selling — a fraction of everything sunk in, upgrades included.
+func sell_value() -> int:
+	return int(round(float(invested) * SELL_REFUND))
+
+
+func eff_damage() -> float:
+	return damage_at(data, level)
+
+
+func eff_fire_rate() -> float:
+	return fire_rate_at(data, level)
+
+
+func eff_range() -> float:
+	return range_at(data, level)
+
+
+func eff_splash() -> float:
+	return splash_at(data, level)
 
 
 func setup(trap_data: TrapData) -> void:
 	data = trap_data
 	targeting = trap_data.targeting
+	level = 1
+	invested = trap_data.cost
+
+
+## Can this trap be told WHO to shoot, right now? Three ways to be told no: it
+## isn't a turret, it's a 'simple' one that never chooses (the Dart Launcher), or
+## it hasn't reached the level that earns the choice (the Crossbow, at Lv 2).
+## One answer, so the button and the action can't disagree.
+func can_retarget() -> bool:
+	if data.kind != TrapData.Kind.TURRET or data.fixed_targeting:
+		return false
+	return level >= data.targeting_level
 
 
 func cycle_targeting() -> void:
-	## Simple traps (e.g. the Dart Launcher) can't be re-targeted.
-	if data.fixed_targeting:
+	if not can_retarget():
 		return
 	targeting = ((targeting + 1) % TrapData.Targeting.size()) as TrapData.Targeting
 	queue_redraw()
@@ -96,7 +246,7 @@ func _current_target(heroes: Array) -> Hero:
 		var hero := h as Hero
 		if hero == null or not hero.is_alive():
 			continue
-		if position.distance_to(hero.position) > data.attack_range:
+		if position.distance_to(hero.position) > eff_range():
 			continue
 		var score := _score(hero)
 		if score > best_score:
@@ -110,8 +260,8 @@ func _tick_rot(heroes: Array) -> void:
 		var hero := h as Hero
 		if hero == null or not hero.is_alive():
 			continue
-		if position.distance_to(hero.position) <= data.attack_range:
-			hero.apply_rot(data.weaken_damage_bonus, data.weaken_heal_cut)
+		if position.distance_to(hero.position) <= eff_range():
+			hero.apply_rot(rot_bonus_at(data, level), heal_cut_at(data, level))
 
 
 func _tick_slow(heroes: Array) -> void:
@@ -119,8 +269,8 @@ func _tick_slow(heroes: Array) -> void:
 		var hero := h as Hero
 		if hero == null or not hero.is_alive():
 			continue
-		if position.distance_to(hero.position) <= data.attack_range:
-			hero.apply_slow(data.slow_amount)
+		if position.distance_to(hero.position) <= eff_range():
+			hero.apply_slow(slow_at(data, level))
 
 
 func _tick_area(heroes: Array) -> void:
@@ -131,11 +281,11 @@ func _tick_area(heroes: Array) -> void:
 		var hero := h as Hero
 		if hero == null or not hero.is_alive():
 			continue
-		if position.distance_to(hero.position) <= data.attack_range:
-			hero.take_damage(data.damage, data.damage_type)
+		if position.distance_to(hero.position) <= eff_range():
+			hero.take_damage(eff_damage(), data.damage_type)
 			hit = true
 	if hit:
-		_cd = data.fire_rate
+		_cd = eff_fire_rate()
 		_flash = 0.12
 
 
@@ -145,18 +295,19 @@ func _tick_turret(heroes: Array) -> void:
 	var best := _current_target(heroes)
 	if best == null:
 		return
-	best.take_damage(data.damage, data.damage_type)
+	best.take_damage(eff_damage(), data.damage_type)
 	## Explosive shells catch the pack around the target, at reduced strength —
 	## that falloff is what stops a mortar from simply outclassing the crossbow.
-	if data.splash_radius > 0.0:
+	var splash := eff_splash()
+	if splash > 0.0:
 		for h in heroes:
 			var other := h as Hero
 			if other == null or other == best or not other.is_alive():
 				continue
-			if best.position.distance_to(other.position) <= data.splash_radius:
-				other.take_damage(data.damage * SPLASH_FALLOFF, data.damage_type)
+			if best.position.distance_to(other.position) <= splash:
+				other.take_damage(eff_damage() * SPLASH_FALLOFF, data.damage_type)
 	_muzzle = best.position - position
-	_cd = data.fire_rate
+	_cd = eff_fire_rate()
 	_flash = BOLT_TIME
 
 
@@ -181,10 +332,11 @@ func _score(hero: Hero) -> float:
 func _draw() -> void:
 	var c := data.color
 
+	var reach := eff_range()
 	if data.kind != TrapData.Kind.AREA_DAMAGE:
-		draw_arc(Vector2.ZERO, data.attack_range, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.13), 1.0)
+		draw_arc(Vector2.ZERO, reach, 0.0, TAU, 48, Color(c.r, c.g, c.b, 0.13), 1.0)
 	else:
-		draw_circle(Vector2.ZERO, data.attack_range, Color(c.r, c.g, c.b, 0.13))
+		draw_circle(Vector2.ZERO, reach, Color(c.r, c.g, c.b, 0.13))
 
 	var flashing := _flash > 0.0
 	var body := c.lightened(0.5) if flashing else c
@@ -225,16 +377,37 @@ func _draw() -> void:
 			_draw_bolt(1.0 - _flash / BOLT_TIME)
 
 	## Show the blast the shell just made, so AoE is visible rather than implied.
-	if data.splash_radius > 0.0 and flashing and _muzzle != Vector2.ZERO:
-		draw_arc(_muzzle, data.splash_radius, 0.0, TAU, 32, Color(1.0, 0.62, 0.22, 0.8), 2.0)
-		draw_circle(_muzzle, data.splash_radius, Color(1.0, 0.62, 0.22, 0.16))
+	var splash := eff_splash()
+	if splash > 0.0 and flashing and _muzzle != Vector2.ZERO:
+		draw_arc(_muzzle, splash, 0.0, TAU, 32, Color(1.0, 0.62, 0.22, 0.8), 2.0)
+		draw_circle(_muzzle, splash, Color(1.0, 0.62, 0.22, 0.16))
+
+	_draw_level_pips()
 
 	if selected:
 		draw_arc(Vector2.ZERO, 22.0, 0.0, TAU, 28, Color(1, 1, 1, 0.95), 2.5)
 
-	if selected and data.kind == TrapData.Kind.TURRET:
+	## The floating priority label is only meaningful on a turret whose priority is
+	## actually yours to set — on the others it read as a setting that wasn't.
+	if selected and can_retarget():
 		var f := ThemeDB.fallback_font
 		draw_string(f, Vector2(-30, -26), targeting_name(targeting), HORIZONTAL_ALIGNMENT_LEFT, -1, 13, Color(1, 1, 1, 0.95))
+
+
+## One gold pip per level, sitting just above the trap. Level 1 draws nothing —
+## most traps on the board are level 1, and a badge on every one of them is just
+## noise. Drawn screen-upright so the pips read the same in either orientation.
+func _draw_level_pips() -> void:
+	if level <= 1:
+		return
+	draw_set_transform(Vector2.ZERO, -global_rotation, Vector2.ONE)
+	var spacing := 7.0
+	var x0 := -(float(level - 1) * spacing) * 0.5
+	for i in level:
+		var p := Vector2(x0 + float(i) * spacing, -23.0)
+		draw_circle(p, 3.0, Color(0, 0, 0, 0.6))
+		draw_circle(p, 2.0, Color(1.0, 0.86, 0.35))
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 # --- Placeholder art -------------------------------------------------------

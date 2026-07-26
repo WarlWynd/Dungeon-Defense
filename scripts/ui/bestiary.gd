@@ -33,6 +33,7 @@ var _detail_title: Label
 var _detail_stats: RichTextLabel
 var _detail_body: Label
 var _detail_compare: RichTextLabel
+var _detail_levels: RichTextLabel
 ## A gold coin and a heart baked to textures once, so RichTextLabel.add_image can
 ## drop them inline. Supersampled (32px, shown ~15px) so the downscale smooths the
 ## edge.
@@ -92,7 +93,6 @@ func _build() -> void:
 
 	_title = Label.new()
 	_title.add_theme_font_size_override("font_size", 26)
-	_title.add_theme_color_override("font_color", Color(1.0, 0.85, 0.25))
 	_list_page.add_child(_title)
 
 	## Two books in one panel: who's coming for the gold, and who fights for it.
@@ -110,7 +110,6 @@ func _build() -> void:
 
 	_hint = Label.new()
 	_hint.add_theme_font_size_override("font_size", 14)
-	_hint.add_theme_color_override("font_color", Color(0.6, 0.6, 0.6))
 	_list_page.add_child(_hint)
 
 	var scroll := ScrollContainer.new()
@@ -158,6 +157,11 @@ func _build() -> void:
 	_detail_body = _wrapped_label(16, Color(0.88, 0.88, 0.88))
 	body_box.add_child(_detail_body)
 
+	## Traps only. Inside the SCROLL, not up in _detail_stats — five rows would
+	## shove the fixed header off the page on a short window.
+	_detail_levels = _rich_label(14, Color(0.88, 0.80, 0.58))
+	body_box.add_child(_detail_levels)
+
 	_detail_compare = _rich_label(15, Color(0.62, 0.80, 0.98))
 	body_box.add_child(_detail_compare)
 
@@ -185,9 +189,33 @@ func open(index: int) -> void:
 	visible = true
 
 
+## Open straight to one Anti-Hero's entry, skipping the list. Used by the hoard
+## bar's marks: the player has already said which one they're asking about by
+## clicking it, so making them find it again in a list would be a step backwards.
+## BACK still returns to the monster list, because the tab is set on the way in.
+func open_minion(id: String, index: int) -> void:
+	if not GameData.minions.has(id):
+		return
+	wave_index = index
+	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tab = TAB_MONSTERS
+	_rebuild_entries()
+	_show_minion(id)
+	visible = true
+
+
 func close_panel() -> void:
 	visible = false
 	closed.emit()
+
+
+## Repaint everything that caches a colour after the palette changes. The entry
+## rows bake their colours in as they're built, so they have to be rebuilt rather
+## than just re-tinted — cheap, and only the list page is ever affected.
+func apply_scheme() -> void:
+	_refresh_tabs()
+	if visible:
+		_rebuild_entries()
 
 
 func toggle(index: int) -> void:
@@ -227,10 +255,15 @@ func _select_tab(i: int) -> void:
 
 
 func _refresh_tabs() -> void:
+	## Which book you're in is told by the palette's accent against its dim — the
+	## selected tab was a fixed gold before, which read as "nothing here follows
+	## the theme" on every scheme that isn't gold.
+	var s: ColorScheme = Settings.scheme()
+	_title.add_theme_color_override("font_color", s.accent)
+	_hint.add_theme_color_override("font_color", s.dim)
 	for i in _tab_buttons.size():
 		var b: Button = _tab_buttons[i]
-		b.add_theme_color_override("font_color",
-				Color(1.0, 0.85, 0.25) if i == _tab else Color(0.62, 0.62, 0.62))
+		b.add_theme_color_override("font_color", s.accent if i == _tab else s.dim)
 	match _tab:
 		TAB_RAIDERS:
 			_title.text = "BESTIARY — RAIDERS"
@@ -261,14 +294,14 @@ func _build_raiders(comp: Dictionary) -> void:
 
 
 func _build_monsters() -> void:
-	var frac := EconomySystem.hoard_fraction()
+	var gold := float(EconomySystem.hoard)
 	var mref := _reference(false)
 	_add_header("IN THE DUNGEON NOW", Color(0.55, 0.9, 0.5))
 	var absent: Array = []
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		if _minion_present(d, frac):
+		if _minion_present(d, gold):
 			_add_monster_entry(d, id, true, mref)
 		else:
 			absent.append(id)
@@ -365,10 +398,12 @@ func _trap_dps(d: TrapData) -> float:
 
 ## Is this Anti-Hero actually in the dungeon right now? Auto units come and go
 ## with the hoard; bought/earned ones are permanent once unlocked.
-func _minion_present(d: MinionData, frac: float) -> bool:
+func _minion_present(d: MinionData, gold: float) -> bool:
+	if Bank.is_unlocked(d.id):
+		return true
 	if d.acquire_mode == "auto":
-		return frac >= d.allure_desert
-	return Bank.is_unlocked(d.id)
+		return gold >= d.allure_desert
+	return false
 
 
 func _reference(heroes: bool) -> Dictionary:
@@ -446,7 +481,7 @@ func _add_entry(label: String, col: Color, active: bool, kind: String, id: Strin
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_label.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	name_label.add_theme_font_size_override("font_size", 15)
-	name_label.add_theme_color_override("font_color", Color(1, 1, 1, dim))
+	name_label.add_theme_color_override("font_color", Color(Settings.scheme().text, dim))
 	name_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	row.add_child(name_label)
 
@@ -489,7 +524,7 @@ func _coin_chip(value: float, dim: float) -> Control:
 	lbl.text = str(int(round(value)))
 	lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	lbl.add_theme_font_size_override("font_size", 14)
-	lbl.add_theme_color_override("font_color", Color(1, 1, 1, dim))
+	lbl.add_theme_color_override("font_color", Color(Settings.scheme().text, dim))
 	lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	box.add_child(lbl)
 
@@ -595,6 +630,7 @@ func _show_hero(id: String) -> void:
 	## keep their comparison; it's still useful against the free Goblin Pack.)
 	_detail_compare.text = ""
 	_detail_compare.visible = false
+	_detail_levels.visible = false
 	_set_pros_cons(d.strengths, d.weaknesses)
 	_list_page.visible = false
 	_detail_page.visible = true
@@ -674,6 +710,7 @@ func _show_minion(id: String) -> void:
 	_detail_body.text = d.description
 	_set_rich_text(_detail_compare, _vs_monster_baseline(d))
 	_detail_compare.visible = true
+	_detail_levels.visible = false
 	_set_pros_cons(d.strengths, d.weaknesses)
 	_list_page.visible = false
 	_detail_page.visible = true
@@ -721,10 +758,21 @@ func _show_trap(id: String) -> void:
 	if d.weaken_heal_cut > 0.0:
 		lines.append("ROT: -%d%% healing received in range  (beats the priests)" % int(d.weaken_heal_cut * 100.0))
 	if d.kind == TrapData.Kind.TURRET:
-		lines.append("Shoots: %s  ·  tap a built trap to change this" % Trap.targeting_name(d.targeting))
+		## Three different promises, and the book used to make the same one for all
+		## of them — including the Dart, which can never be re-aimed at all.
+		var shoots := "Shoots: %s" % Trap.targeting_name(d.targeting)
+		if d.fixed_targeting:
+			lines.append("%s  ·  fixed. It never chooses." % shoots)
+		elif d.targeting_level > 1:
+			lines.append("%s  ·  picks its own target from Lv %d" % [shoots, d.targeting_level])
+		else:
+			lines.append("%s  ·  tap a built trap to change this" % shoots)
+	lines.append(_trap_upgrade_line(d))
 
 	_set_rich_text(_detail_stats, "\n".join(lines))
 	_detail_body.text = d.flavor
+	_set_rich_text(_detail_levels, _trap_level_block(d))
+	_detail_levels.visible = true
 	_set_rich_text(_detail_compare, _vs_trap_baseline(d))
 	_detail_compare.visible = true
 	## TrapData carries no authored strengths/weaknesses the way HeroData and
@@ -732,6 +780,66 @@ func _show_trap(id: String) -> void:
 	_set_pros_cons(PackedStringArray(), PackedStringArray())
 	_list_page.visible = false
 	_detail_page.visible = true
+
+
+## Every level the trap can reach, and what each one costs to get to. The
+## Bestiary is where the buying decision is made, and "upgrade this one or build
+## a second?" cannot be answered without the whole ladder in front of you.
+##
+## Read as sentences rather than columns: the panel's font is proportional, so
+## padded columns would come out ragged anyway.
+func _trap_level_block(d: TrapData) -> String:
+	var out := ["LEVELS  ·  tap a built trap and press Upgrade"]
+	for lvl in range(1, Trap.MAX_LEVEL + 1):
+		var parts := ["Lv %d" % lvl]
+		if d.damage > 0.0:
+			parts.append("%d every %.2fs  =  %.1f DPS" % [
+				int(round(Trap.damage_at(d, lvl))), Trap.fire_rate_at(d, lvl),
+				Trap.dps_at(d, lvl)])
+		if d.slow_amount > 0.0:
+			parts.append("slows %d%%" % int(Trap.slow_at(d, lvl) * 100.0))
+		if d.weaken_heal_cut > 0.0:
+			parts.append("+%d%% damage taken, -%d%% healing" % [
+				int(Trap.rot_bonus_at(d, lvl) * 100.0),
+				int(Trap.heal_cut_at(d, lvl) * 100.0)])
+		parts.append("reach %d" % int(Trap.range_at(d, lvl)))
+		if d.splash_radius > 0.0:
+			parts.append("splash %d" % int(Trap.splash_at(d, lvl)))
+		## The level that unlocks target priority is a reason to upgrade that isn't
+		## a number, so it's called out on the rung that grants it.
+		if not d.fixed_targeting and d.targeting_level > 1 and lvl == d.targeting_level:
+			parts.append("PICKS ITS TARGET")
+		## Level 1 is what you pay at the build slot; every level after is the
+		## upgrade price on top of it.
+		if lvl == 1:
+			parts.append("built for %d {coin}" % d.cost)
+		else:
+			parts.append("+%d {coin}" % Trap.upgrade_cost(d, lvl - 1))
+		out.append("  ·  ".join(parts))
+	out.append("Fully levelled it has cost %d {coin} in all." % (
+			d.cost + Trap.total_upgrade_cost(d)))
+	return "\n".join(out)
+
+
+## What levelling this trap all the way up actually buys, priced in total Gold.
+## Quoted per KIND, because "2.9x the DPS" means nothing on an aura that has no
+## DPS at all — there the honest number is the slow or the rot.
+func _trap_upgrade_line(d: TrapData) -> String:
+	var total := Trap.total_upgrade_cost(d)
+	var gain := ""
+	if d.damage > 0.0:
+		gain = "%.1fx DPS" % (Trap.dps_at(d, Trap.MAX_LEVEL) / maxf(Trap.dps_at(d, 1), 0.01))
+	elif d.slow_amount > 0.0:
+		gain = "slows %d%% instead of %d%%" % [
+			int(Trap.slow_at(d, Trap.MAX_LEVEL) * 100.0), int(d.slow_amount * 100.0)]
+	elif d.weaken_heal_cut > 0.0:
+		gain = "+%d%% damage taken, -%d%% healing" % [
+			int(Trap.rot_bonus_at(d, Trap.MAX_LEVEL) * 100.0),
+			int(Trap.heal_cut_at(d, Trap.MAX_LEVEL) * 100.0)]
+	if gain == "":
+		return "Upgrades in place to Lv %d for %d {coin} more" % [Trap.MAX_LEVEL, total]
+	return "Upgrades in place to Lv %d for %d {coin} more  =  %s" % [
+		Trap.MAX_LEVEL, total, gain]
 
 
 func _trap_kind_line(d: TrapData) -> String:
@@ -776,8 +884,8 @@ func _acquire_line(d: MinionData) -> String:
 		"earn":
 			return "Earned by clearing wave %d  ·  never deserts" % d.unlock_wave
 		_:
-			return "Arrives at %d%% hoard  ·  LEAVES below %d%%" % [
-				int(d.allure_arrive * 100.0), int(d.allure_desert * 100.0)]
+			return "Arrives at %d {coin} in the hoard  ·  LEAVES below %d {coin}" % [
+				int(d.allure_arrive), int(d.allure_desert)]
 
 
 func _set_pros_cons(strengths: PackedStringArray, weaknesses: PackedStringArray) -> void:

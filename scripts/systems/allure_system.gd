@@ -33,18 +33,18 @@ func advance_to_wave(w: int) -> void:
 	refresh_arrivals()
 
 
-## Which minions WOULD be present at a hypothetical hoard fraction. Pure — the
-## HUD uses it to preview what a purchase costs BEFORE you commit.
-func roster_at(fraction: float) -> Array[String]:
+## Which minions WOULD be present at a hypothetical hoard. Pure — the HUD uses it
+## to preview what a purchase costs BEFORE you commit. Takes GOLD, not a fraction.
+func roster_at(gold: float) -> Array[String]:
 	var out: Array[String] = []
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
 		var keep: bool
 		if _is_present(id):
-			keep = _should_keep(id, d, fraction)
+			keep = _should_keep(id, d, gold)
 		else:
-			keep = _should_arrive(id, d, fraction)
+			keep = _should_arrive(id, d, gold)
 		if keep:
 			out.append(id)
 	return out
@@ -55,19 +55,19 @@ func roster_at(fraction: float) -> Array[String]:
 ## and replaces the dead. Never mid-wave.
 func refresh_roster() -> void:
 	_unlock_earned()
-	var frac := EconomySystem.hoard_fraction()
+	var gold := float(EconomySystem.hoard)
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
 		if _is_present(id):
-			if _should_keep(id, d, frac):
+			if _should_keep(id, d, gold):
 				_set_restless(id, false)
 				_mend(id, d)
 				_reinforce(id, d)
 			else:
 				_desert(id, d)
 		else:
-			if _should_arrive(id, d, frac):
+			if _should_arrive(id, d, gold):
 				_arrive(id, d)
 	roster_changed.emit()
 
@@ -80,33 +80,39 @@ func refresh_roster() -> void:
 func refresh_arrivals() -> void:
 	if _container == null or not is_instance_valid(_container):
 		return
-	var frac := EconomySystem.hoard_fraction()
+	var gold := float(EconomySystem.hoard)
 	var changed := false
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
 		if _is_present(id):
 			continue
-		if _should_arrive(id, d, frac):
+		if _should_arrive(id, d, gold):
 			_arrive(id, d)
 			changed = true
 	if changed:
 		roster_changed.emit()
 
 
-## Acquisition rules. AUTO units (the Succubus) are drawn purely by the size of
-## the hoard. BUY/EARN units are present once UNLOCKED (bought with souls/gems in
-## the store, or earned by progression) and then never leave on their own.
-func _should_arrive(id: String, d: MinionData, frac: float) -> bool:
+## Acquisition rules, in one order for both questions: AN UNLOCK ALWAYS WINS.
+## Paying gems for a Troll has to mean you own a Troll — if the hoard test still
+## applied afterwards it would desert the moment the pile dipped, and the player
+## would rightly call that a refund they didn't ask for. Only units NOT unlocked
+## fall through to Allure, where the hoard draws them out and lets them go again.
+func _should_arrive(id: String, d: MinionData, gold: float) -> bool:
+	if Bank.is_unlocked(id):
+		return true
 	if d.acquire_mode == "auto":
-		return frac >= d.allure_arrive
-	return Bank.is_unlocked(id)
+		return gold >= d.allure_arrive
+	return false
 
 
-func _should_keep(id: String, d: MinionData, frac: float) -> bool:
+func _should_keep(id: String, d: MinionData, gold: float) -> bool:
+	if Bank.is_unlocked(id):
+		return true
 	if d.acquire_mode == "auto":
-		return frac >= d.allure_desert
-	return Bank.is_unlocked(id)
+		return gold >= d.allure_desert
+	return false
 
 
 ## Permanently unlock any "earn" Anti-Hero whose wave has been reached.
@@ -166,11 +172,12 @@ func _reinforce(id: String, d: MinionData) -> void:
 
 ## Telegraph who's about to leave, during the build window.
 func update_restless_flags() -> void:
-	var frac := EconomySystem.hoard_fraction()
+	var gold := float(EconomySystem.hoard)
 	for key in _active.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		var leaving: bool = d.acquire_mode == "auto" and frac < d.allure_desert
+		var leaving: bool = d.acquire_mode == "auto" and not Bank.is_unlocked(id) \
+				and gold < d.allure_desert
 		_set_restless(id, leaving)
 		if leaving:
 			EventBus.minion_restless.emit(d)

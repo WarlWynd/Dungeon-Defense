@@ -15,6 +15,11 @@ const SCHEME_DEFAULT := 0
 var _trap_slots: Dictionary = {}   ## board name -> int
 var _color_scheme: int = SCHEME_DEFAULT
 
+## Which save slot is being played. Lives here rather than in Bank because it is
+## the one piece of state that must survive Bank swapping its own file out — it's
+## the pointer, not the contents.
+var _profile: int = 0
+
 signal changed()
 signal color_scheme_changed(index: int)
 
@@ -41,6 +46,15 @@ func set_color_scheme(index: int) -> void:
 	_save()
 	color_scheme_changed.emit(_color_scheme)
 	changed.emit()
+
+
+func get_profile() -> int:
+	return _profile
+
+
+func set_profile(index: int) -> void:
+	_profile = maxi(index, 0)
+	_save()
 
 
 func get_trap_slots(board: String) -> int:
@@ -71,6 +85,7 @@ func _load() -> void:
 		_color_scheme = clampi(
 				int(cf.get_value("display", "color_scheme", SCHEME_DEFAULT)),
 				0, ColorScheme.count() - 1)
+	_profile = maxi(int(cf.get_value("player", "profile", 0)), 0)
 	if not cf.has_section("trap_slots"):
 		return
 	for board in cf.get_section_keys("trap_slots"):
@@ -82,6 +97,7 @@ func _load() -> void:
 func _save() -> void:
 	var cf := ConfigFile.new()
 	cf.set_value("display", "color_scheme_name", ColorScheme.get_scheme(_color_scheme).display_name)
+	cf.set_value("player", "profile", _profile)
 	for board in _trap_slots.keys():
 		cf.set_value("trap_slots", board, _trap_slots[board])
 	cf.save(PATH)

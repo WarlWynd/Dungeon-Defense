@@ -11,11 +11,15 @@ signal board_step_pressed(delta: int)
 signal trap_slots_changed()
 signal antihero_selected(unit: Node2D)
 signal trap_sell_pressed(trap: Node2D)
+signal trap_upgrade_pressed(trap: Node2D)
 signal store_recruit(id: String, currency: String)
 signal store_buy_gold()
 signal store_buy_souls()
 signal store_get_pack(pack_id: String)
 signal store_watch_ad()
+signal profile_play(index: int)
+signal profile_new(index: int)
+signal profile_erase(index: int)
 
 var _root: Control
 var _hoard_bar: Control
@@ -35,6 +39,15 @@ var _bestiary: Bestiary
 var _inspector: Inspector
 var _settings_panel: Control
 var _settings_tabs: TabContainer
+var _profile_box: VBoxContainer
+
+## Simulated rewarded ad.
+var _ad_panel: Control
+var _ad_countdown: Label
+var _ad_progress: Control
+var _ad_claim: Button
+var _ad_time: float = 0.0
+const AD_SECONDS := 5.0
 var _slots_label: Label
 var _slots_title: Label
 var _board_label: Label
@@ -81,6 +94,8 @@ func _process(delta: float) -> void:
 			_toast.text = ""
 	if _store_panel != null and _store_panel.visible:
 		_update_store_balance()
+	if _ad_panel != null and _ad_panel.visible:
+		_tick_ad(delta)
 
 
 func _build() -> void:
@@ -203,14 +218,17 @@ func _build() -> void:
 
 	_refresh_board_label()
 
-	_hoard_bar = Control.new()
+	_hoard_bar = HoardBar.new()
 	_hoard_bar.set_anchors_preset(Control.PRESET_BOTTOM_WIDE)
 	_hoard_bar.offset_left = 78          ## clear of the board picker to its left
 	_hoard_bar.offset_right = -470   ## leave the bottom-right for the trap tray
 	_hoard_bar.offset_top = -68
 	_hoard_bar.offset_bottom = -12
-	_hoard_bar.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	## PASS, not IGNORE: the bar has to see the pointer to answer a tooltip, but
+	## must not swallow the click — PASS leaves it to fall through to the board.
+	_hoard_bar.mouse_filter = Control.MOUSE_FILTER_PASS
 	_hoard_bar.draw.connect(_draw_hoard_bar)
+	(_hoard_bar as HoardBar).tick_pressed.connect(_on_hoard_tick_pressed)
 	_root.add_child(_hoard_bar)
 
 	## Primary status line and the toast under it both track the palette — the
@@ -246,8 +264,10 @@ func _build() -> void:
 	_inspector.offset_right = 280
 	_inspector.offset_top = -300
 	_inspector.offset_bottom = -72   ## sit just above the bottom-left hoard bar
-	## Relay the inspector's Sell up to main, which owns the economy and build slots.
+	## Relay the inspector's Sell and Upgrade up to main, which owns the economy
+	## and the build slots.
 	_inspector.sell_requested.connect(func(trap): trap_sell_pressed.emit(trap))
+	_inspector.upgrade_requested.connect(func(trap): trap_upgrade_pressed.emit(trap))
 	_root.add_child(_inspector)
 
 	_build_settings_panel()
@@ -333,6 +353,10 @@ func _build() -> void:
 		_themed_icons.append(coin)
 
 		_tray.add_child(b)
+
+	## Built last so it sits above the store, the settings and the bestiary — an ad
+	## that something else can draw over isn't standing in for anything.
+	_build_ad_panel()
 
 
 ## Left-side list of the Anti-Heroes currently drawn to your hoard. Click a row
@@ -472,6 +496,178 @@ func _build_store_panel() -> void:
 	scroll.add_child(_store_box)
 
 
+## A SIMULATED rewarded ad. The real thing is an SDK that takes the screen for a
+## few seconds and calls back when the video finishes; this stands in for it so
+## the whole flow can be played and tested before any SDK exists — including the
+## path that matters most, the player quitting early and getting NOTHING. Swap
+## the body of Bank.watch_ad_for_gems() for the SDK call and keep this panel as
+## the editor-only fallback, or delete it and let the SDK own the screen.
+func _build_ad_panel() -> void:
+	_ad_panel = Control.new()
+	_ad_panel.set_anchors_preset(Control.PRESET_FULL_RECT)
+	_ad_panel.visible = false
+	_root.add_child(_ad_panel)
+
+	var scrim := ColorRect.new()
+	scrim.set_anchors_preset(Control.PRESET_FULL_RECT)
+	scrim.color = Color(0, 0, 0, 0.88)
+	## STOP, and deliberately NOT click-to-close: an ad you can dismiss by tapping
+	## the backdrop doesn't test the thing it exists to test.
+	scrim.mouse_filter = Control.MOUSE_FILTER_STOP
+	_ad_panel.add_child(scrim)
+
+	var frame := PanelContainer.new()
+	frame.set_anchors_preset(Control.PRESET_CENTER)
+	frame.offset_left = -190
+	frame.offset_right = 190
+	frame.offset_top = -200
+	frame.offset_bottom = 200
+	_ad_panel.add_child(frame)
+
+	var box := VBoxContainer.new()
+	box.add_theme_constant_override("separation", 10)
+	frame.add_child(box)
+
+	var header := _section_header("ADVERTISEMENT")
+	header.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	box.add_child(header)
+
+	var art := Control.new()
+	art.custom_minimum_size = Vector2(0, 150)
+	art.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	art.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	art.draw.connect(_draw_ad_art.bind(art))
+	box.add_child(art)
+
+	var pitch := Label.new()
+	pitch.text = "GEM QUEST SAGA"
+	pitch.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	pitch.add_theme_font_size_override("font_size", 20)
+	box.add_child(pitch)
+	_accent_labels.append(pitch)
+
+	box.add_child(_note_label("Three billion players can't be wrong. Probably."))
+
+	_ad_countdown = Label.new()
+	_ad_countdown.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	_ad_countdown.add_theme_font_size_override("font_size", 14)
+	box.add_child(_ad_countdown)
+
+	_ad_progress = Control.new()
+	_ad_progress.custom_minimum_size = Vector2(0, 8)
+	_ad_progress.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	_ad_progress.draw.connect(_draw_ad_progress)
+	box.add_child(_ad_progress)
+
+	var row := HBoxContainer.new()
+	row.add_theme_constant_override("separation", 8)
+	box.add_child(row)
+
+	## SKIP is live from the first frame, exactly like a real rewarded ad: leaving
+	## early is allowed, and it costs you the reward.
+	var skip := Button.new()
+	skip.text = "SKIP"
+	skip.custom_minimum_size = Vector2(110, 42)
+	skip.pressed.connect(_close_ad.bind(false))
+	row.add_child(skip)
+
+	_ad_claim = _icon_button(["CLAIM  +%d" % Bank.AD_REWARD_GEMS, _draw_gem_icon], true)
+	_ad_claim.custom_minimum_size = Vector2(0, 42)
+	_ad_claim.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	_ad_claim.pressed.connect(_close_ad.bind(true))
+	row.add_child(_ad_claim)
+
+
+## _icon_button dims its contents at BUILD time, so flipping `disabled` later has
+## to re-dim the row it made — that row is the button's only child.
+func _set_ad_claim_enabled(on: bool) -> void:
+	_ad_claim.disabled = not on
+	var row := _ad_claim.get_child(0) as Control
+	if row != null:
+		row.modulate = Color(1, 1, 1, 1) if on else Color(1, 1, 1, 0.4)
+
+
+func _open_ad() -> void:
+	_ad_time = AD_SECONDS
+	_set_ad_claim_enabled(false)
+	_ad_countdown.text = "Reward in %ds" % int(AD_SECONDS)
+	_ad_panel.visible = true
+	_ad_progress.queue_redraw()
+
+
+func _close_ad(claimed: bool) -> void:
+	_ad_panel.visible = false
+	if claimed:
+		store_watch_ad.emit()
+	else:
+		say("Ad skipped — no gems.")
+
+
+func _tick_ad(delta: float) -> void:
+	if _ad_time <= 0.0:
+		return
+	## REAL seconds. The game's 2x/3x speed scales delta, and an ad that finishes
+	## in a third of the time because the player left the game fast-forwarded is
+	## not an ad worth simulating.
+	_ad_time = maxf(0.0, _ad_time - delta / maxf(Engine.time_scale, 0.001))
+	if _ad_time > 0.0:
+		_ad_countdown.text = "Reward in %ds" % ceili(_ad_time)
+	else:
+		_ad_countdown.text = "Reward unlocked"
+		_set_ad_claim_enabled(true)
+	_ad_progress.queue_redraw()
+
+
+func _draw_ad_progress() -> void:
+	var s: ColorScheme = Settings.scheme()
+	var sz := _ad_progress.size
+	if sz.x <= 0.0:
+		return
+	_ad_progress.draw_rect(Rect2(Vector2.ZERO, sz), Color(s.text, 0.18))
+	var pct := 1.0 - clampf(_ad_time / AD_SECONDS, 0.0, 1.0)
+	_ad_progress.draw_rect(Rect2(Vector2.ZERO, Vector2(sz.x * pct, sz.y)), s.accent)
+
+
+## Stand-in ad artwork: an oversized gem with the accent glinting off it. Drawn
+## rather than shipped as an image so it costs nothing and follows the palette.
+func _draw_ad_art(icon: Control) -> void:
+	var s: ColorScheme = Settings.scheme()
+	var ctr := icon.size * 0.5
+	var body := Color(0.35, 0.62, 1.0)
+	var facet := body.darkened(0.4)
+	var k := 6.0                       ## scale-up of the HUD's little gem glyph
+	var table_l := ctr + Vector2(-3.5, -5.5) * k
+	var table_r := ctr + Vector2(3.5, -5.5) * k
+	var giro_l := ctr + Vector2(-6.0, -1.5) * k
+	var giro_r := ctr + Vector2(6.0, -1.5) * k
+	var tip := ctr + Vector2(0.0, 6.5) * k
+	icon.draw_colored_polygon(PackedVector2Array([table_l, table_r, giro_r, tip, giro_l]), body)
+	icon.draw_line(table_l, giro_l, facet, 2.0)
+	icon.draw_line(table_r, giro_r, facet, 2.0)
+	icon.draw_line(giro_l, giro_r, facet, 2.0)
+	icon.draw_line(giro_l, tip, facet, 2.0)
+	icon.draw_line(giro_r, tip, facet, 2.0)
+	icon.draw_line(table_l, tip, facet, 1.5)
+	icon.draw_line(table_r, tip, facet, 1.5)
+	## Sparkles — four-pointed stars around the stone.
+	for p: Vector2 in [Vector2(-52, -34), Vector2(48, -20), Vector2(-38, 30), Vector2(56, 34)]:
+		var c := ctr + p
+		var r := 7.0
+		icon.draw_line(c + Vector2(-r, 0), c + Vector2(r, 0), s.accent, 2.0)
+		icon.draw_line(c + Vector2(0, -r), c + Vector2(0, r), s.accent, 2.0)
+
+
+## A mark on the hoard bar is the one place an Anti-Hero is named before you own
+## it — so clicking it opens its page, whether it's standing in your dungeon or
+## still a number you're saving toward.
+func _on_hoard_tick_pressed(id: String) -> void:
+	if _store_panel != null and _store_panel.visible:
+		_toggle_store()
+	if _settings_panel != null and _settings_panel.visible:
+		_toggle_settings()
+	_bestiary.open_minion(id, _wave_index)
+
+
 func _toggle_store() -> void:
 	if _store_panel == null:
 		return
@@ -520,10 +716,14 @@ func refresh_store() -> void:
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		if d.acquire_mode == "auto":
-			_store_box.add_child(_info_row("%s — drawn automatically by a rich hoard" % d.display_name))
-		elif Bank.is_unlocked(id):
+		## Owned first: an unlocked unit is recruited whatever its acquire mode, and
+		## telling a player who just bought a Troll that it's "drawn out by a hoard
+		## of 1300" would be describing the route they paid to skip.
+		if Bank.is_unlocked(id):
 			_store_box.add_child(_info_row("%s — recruited" % d.display_name))
+		elif d.acquire_mode == "auto":
+			_store_box.add_child(_info_row("%s — drawn out by a hoard of %d Gold" % [
+					d.display_name, int(d.allure_arrive)]))
 		elif d.acquire_mode == "earn":
 			_store_box.add_child(_info_row("%s — earn by clearing wave %d" % [d.display_name, d.unlock_wave]))
 		else:
@@ -545,6 +745,20 @@ func refresh_store() -> void:
 			_store_box.add_child(row)
 
 	_store_box.add_child(_section_header("Spend Gems"))
+	## Anti-Heroes you would otherwise have to WAIT for — clear the wave, or grow
+	## the hoard to their number. Gems buy the wait, and buy permanence with it.
+	## The Wraith isn't here: it's soul-priced, so it keeps its two-currency row up
+	## in Recruit rather than being offered twice.
+	for key in GameData.minions.keys():
+		var id: String = key
+		var d: MinionData = GameData.minions[id]
+		if d.recruit_gems <= 0 or d.acquire_mode == "buy" or Bank.is_unlocked(id):
+			continue
+		var mbtn := _icon_button(["%s  —  %d" % [d.display_name, d.recruit_gems], _draw_gem_icon],
+				not Bank.can_afford_gems(d.recruit_gems))
+		mbtn.pressed.connect(store_recruit.emit.bind(id, "gems"))
+		_store_box.add_child(mbtn)
+
 	## "+250 [coin]  —  8 [gem]": buy Gold with Gems. Both amounts are glyphs.
 	var goldbtn := _icon_button(["+%d" % Bank.GOLD_REFILL, _draw_gold_icon,
 			"  —  %d" % Bank.GEM_GOLD_COST, _draw_gem_icon],
@@ -560,8 +774,9 @@ func refresh_store() -> void:
 	_store_box.add_child(_section_header("Get Gems"))
 	## Gems as the REWARD here, not a price — the ad's amount ends the line, the
 	## packs' amount sits mid-line before the money price.
+	## Opens the ad; the gems are granted by its CLAIM button, not by this one.
 	var adbtn := _icon_button(["Watch Ad  —  +%d" % Bank.AD_REWARD_GEMS, _draw_gem_icon], false)
-	adbtn.pressed.connect(store_watch_ad.emit)
+	adbtn.pressed.connect(_open_ad)
 	_store_box.add_child(adbtn)
 	for pack_key in Bank.GEM_PACKS.keys():
 		var pack_id: String = pack_key
@@ -717,8 +932,11 @@ func _build_settings_panel() -> void:
 	_settings_tabs.size_flags_vertical = Control.SIZE_EXPAND_FILL
 	box.add_child(_settings_tabs)
 
-	_settings_tabs.add_child(_build_board_tab())
+	## Appearance first: it's the tab people open Settings for, and the board's
+	## trap-slot count is a per-board tweak you go looking for deliberately.
 	_settings_tabs.add_child(_build_appearance_tab())
+	_settings_tabs.add_child(_build_board_tab())
+	_settings_tabs.add_child(_build_player_tab())
 
 	var done := Button.new()
 	done.text = "DONE"
@@ -729,7 +947,7 @@ func _build_settings_panel() -> void:
 	_refresh_slots_label()
 
 
-## Tab 1 — per-board build settings.
+## Tab 2 — per-board build settings.
 func _build_board_tab() -> Control:
 	var tab := VBoxContainer.new()
 	tab.name = "Board"
@@ -772,7 +990,99 @@ func _build_board_tab() -> Control:
 	return tab
 
 
-## Tab 2 — palette picker. One toggle per ColorScheme, showing the palette's own
+## Tab 3 — save slots. Souls, gems and recruited Anti-Heroes are ONE character's
+## progress, so a slot is a whole character: start a new one, or go back to a
+## saved one. Colour scheme and trap-slot counts are not part of it — those are
+## preferences about the app, not about the player.
+func _build_player_tab() -> Control:
+	var tab := VBoxContainer.new()
+	tab.name = "Player"
+	tab.add_theme_constant_override("separation", 8)
+
+	var heading := Label.new()
+	heading.text = "Characters"
+	heading.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	heading.add_theme_font_size_override("font_size", 16)
+	tab.add_child(heading)
+
+	var scroll := ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	scroll.size_flags_vertical = Control.SIZE_EXPAND_FILL
+	tab.add_child(scroll)
+
+	_profile_box = VBoxContainer.new()
+	_profile_box.custom_minimum_size = Vector2(410, 0)
+	_profile_box.add_theme_constant_override("separation", 8)
+	scroll.add_child(_profile_box)
+
+	tab.add_child(_note_label(
+			"A character keeps its souls, gems and recruited Anti-Heroes. Your dungeon settings are shared by all of them."))
+	_refresh_profiles()
+	return tab
+
+
+## Rebuilt whole rather than patched: a slot's row changes shape entirely between
+## empty and occupied, and there are only three of them.
+func _refresh_profiles() -> void:
+	if _profile_box == null:
+		return
+	for c in _profile_box.get_children():
+		c.queue_free()
+
+	var s: ColorScheme = Settings.scheme()
+	for i in Bank.PROFILE_COUNT:
+		var info := Bank.profile_summary(i)
+		var active: bool = i == Bank.profile
+		var row := HBoxContainer.new()
+		row.add_theme_constant_override("separation", 6)
+		_profile_box.add_child(row)
+
+		var name_lbl := Label.new()
+		name_lbl.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+		name_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+		name_lbl.add_theme_font_size_override("font_size", 14)
+		if info["exists"]:
+			name_lbl.text = "Character %d\n%d souls · %d gems · %d recruited" % [
+					i + 1, info["souls"], info["gems"], info["unlocked"]]
+		else:
+			name_lbl.text = "Character %d\nempty" % (i + 1)
+		name_lbl.add_theme_color_override("font_color", s.accent if active else s.text)
+		row.add_child(name_lbl)
+
+		## The active slot can't be "played" again — that button becomes its badge.
+		if active:
+			var badge := Label.new()
+			badge.text = "PLAYING"
+			badge.custom_minimum_size = Vector2(84, 44)
+			badge.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+			badge.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
+			badge.add_theme_font_size_override("font_size", 13)
+			badge.add_theme_color_override("font_color", s.accent)
+			row.add_child(badge)
+		elif info["exists"]:
+			var play := Button.new()
+			play.text = "PLAY"
+			play.custom_minimum_size = Vector2(84, 44)
+			play.pressed.connect(func(): profile_play.emit(i))
+			row.add_child(play)
+		else:
+			var fresh := Button.new()
+			fresh.text = "NEW"
+			fresh.custom_minimum_size = Vector2(84, 44)
+			fresh.pressed.connect(func(): profile_new.emit(i))
+			row.add_child(fresh)
+
+		## Erase doubles as "start this one over", so an occupied slot is never a
+		## dead end once all three are full.
+		var erase := Button.new()
+		erase.text = "ERASE"
+		erase.custom_minimum_size = Vector2(76, 44)
+		erase.disabled = not info["exists"]
+		erase.pressed.connect(func(): profile_erase.emit(i))
+		row.add_child(erase)
+
+
+## Tab 1 — palette picker. One toggle per ColorScheme, showing the palette's own
 ## colors as a swatch strip so you can see the scheme before you commit to it.
 func _build_appearance_tab() -> Control:
 	var tab := VBoxContainer.new()
@@ -890,6 +1200,12 @@ func _apply_scheme() -> void:
 		_hoard_bar.queue_redraw()
 	if _store_panel != null and _store_panel.visible:
 		refresh_store()
+	## The Bestiary bakes colours into its rows and its own title/tab labels, so it
+	## can't just inherit the new Theme — it has to be told. Same for the save-slot
+	## rows, which colour the active character with the accent.
+	if _bestiary != null and is_instance_valid(_bestiary):
+		_bestiary.apply_scheme()
+	_refresh_profiles()
 
 
 func _make_theme(s: ColorScheme) -> Theme:
@@ -938,6 +1254,7 @@ func _toggle_settings() -> void:
 	_settings_panel.visible = not _settings_panel.visible
 	if _settings_panel.visible:
 		_refresh_slots_label()
+		_refresh_profiles()
 		for i in _scheme_buttons.size():
 			if is_instance_valid(_scheme_buttons[i]):
 				_scheme_buttons[i].button_pressed = (i == Settings.get_color_scheme())
@@ -1259,6 +1576,22 @@ func inspected() -> Node2D:
 	return null
 
 
+## A levelled-up trap changes both its refund and its next price — re-lay the
+## open card so the two buttons agree with the trap they belong to.
+func refresh_inspector() -> void:
+	_inspector.refresh_trap_buttons()
+
+
+func refresh_profiles() -> void:
+	_refresh_profiles()
+
+
+## Rebuild the left-hand Anti-Hero list now. Driven by AllureSystem.roster_changed
+## so an arrival shows up the moment it happens, whatever the game is doing.
+func refresh_roster() -> void:
+	_update_roster(_inspector.target())
+
+
 func redraw_hoard() -> void:
 	_hoard_bar.queue_redraw()
 
@@ -1284,6 +1617,85 @@ func _draw_trap_icon(icon: Control, d: TrapData) -> void:
 	Trap.draw_glyph(icon, icon.size * 0.5, d, d.color)
 
 
+## The hoard bar, as its own Control purely so it can answer a DIFFERENT tooltip
+## depending on which tick you're pointing at — a plain Control only carries one
+## `tooltip_text`, and the marks each mean something different. Drawing still
+## lives in Hud._draw_hoard_bar via the `draw` signal.
+class HoardBar:
+	extends Control
+
+	signal tick_pressed(id: String)
+
+	## How near the pointer has to be, in pixels, to count as "on" a tick.
+	const HIT := 10.0
+
+	## Which Anti-Hero's mark is under `x`, or "" for the bar itself. One hit test,
+	## shared by the tooltip and the click, so what you read is what you open.
+	func _tick_at(local: Vector2) -> String:
+		var best_id := ""
+		var best_dx := HIT
+		for key in GameData.minions.keys():
+			var d: MinionData = GameData.minions[key]
+			var x: float = size.x * EconomySystem.bar_position(d.allure_arrive)
+			var dx: float = absf(local.x - x)
+			if dx < best_dx:
+				best_dx = dx
+				best_id = key
+		return best_id
+
+	## Clicking a mark opens that Anti-Hero's Bestiary entry. The event is only
+	## consumed when a mark was actually hit — anywhere else on the bar the click
+	## still falls through to the board underneath.
+	func _gui_input(event: InputEvent) -> void:
+		var pressed := false
+		var at := Vector2.ZERO
+		var mb := event as InputEventMouseButton
+		if mb != null and mb.pressed and mb.button_index == MOUSE_BUTTON_LEFT:
+			pressed = true
+			at = mb.position
+		var touch := event as InputEventScreenTouch
+		if touch != null and touch.pressed:
+			pressed = true
+			at = touch.position
+		if not pressed:
+			return
+		var id := _tick_at(at)
+		if id == "":
+			return
+		tick_pressed.emit(id)
+		accept_event()
+
+	func _get_tooltip(at_position: Vector2) -> String:
+		var best_id := _tick_at(at_position)
+		if best_id == "":
+			return "THE HOARD — %d of %d Gold\nYour build budget, your health bar, and the only reason anyone is coming.\nThe marks along the bar are the Anti-Heroes. Point at one, or click it to read its page." % [
+					EconomySystem.hoard, EconomySystem.capacity]
+		return _tick_tooltip(GameData.minions[best_id])
+
+	## What one mark actually means. The acquire mode is the important half: a mark
+	## for a bought or earned unit is only a POSITION on the scale, and without
+	## saying so it reads as "reach this much Gold and it appears", which is a lie.
+	func _tick_tooltip(d: MinionData) -> String:
+		var lines := ["%s — %d Gold" % [d.display_name, int(d.allure_arrive)]]
+		match d.acquire_mode:
+			"auto":
+				lines.append("Comes out of the dark on its own once the hoard reaches %d."
+						% int(d.allure_arrive))
+				lines.append("Walks out again if the hoard falls below %d."
+						% int(d.allure_desert))
+				var short: int = int(d.allure_arrive) - EconomySystem.hoard
+				lines.append("Here now." if short <= 0 else "%d Gold to go." % short)
+			"earn":
+				lines.append("Earned by clearing wave %d, then yours for good — it never deserts."
+						% d.unlock_wave)
+				lines.append("The mark is only where it sits on the scale. Gold does not summon it.")
+			"buy":
+				lines.append("Recruited in the Store for %d souls (or %d gems), then yours for good."
+						% [d.recruit_souls, d.recruit_gems])
+				lines.append("The mark is only where it sits on the scale. Gold does not summon it.")
+		return "\n".join(lines)
+
+
 func _draw_hoard_bar() -> void:
 	var c := _hoard_bar
 	var w: float = c.size.x
@@ -1292,14 +1704,19 @@ func _draw_hoard_bar() -> void:
 	var h := 16.0
 	var top := 32.0
 
-	var frac := EconomySystem.hoard_fraction()
+	## The bar measures the vault's capacity; the Allure thresholds are plain Gold
+	## amounts, so both live on the same scale and a tick sits exactly where its
+	## number is. `gold_after` is what you'd be left with if you spent what's armed.
+	var frac := EconomySystem.capacity_fraction()
 	var after := frac
-	if _preview_cost > 0 and EconomySystem.starting_hoard > 0:
-		after = maxf(0.0, float(EconomySystem.hoard - _preview_cost) / float(EconomySystem.starting_hoard))
+	var gold_after := float(EconomySystem.hoard)
+	if _preview_cost > 0:
+		gold_after = float(maxi(EconomySystem.hoard - _preview_cost, 0))
+		after = EconomySystem.bar_position(gold_after)
 
 	var s: ColorScheme = Settings.scheme()
 	var f := ThemeDB.fallback_font
-	var title := "HOARD  %d / %d" % [EconomySystem.hoard, EconomySystem.starting_hoard]
+	var title := "HOARD  %d / %d" % [EconomySystem.hoard, EconomySystem.capacity]
 	if _preview_cost > 0:
 		title += "     spending %d" % _preview_cost
 	c.draw_string(f, Vector2(0, 18), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15, s.accent)
@@ -1312,15 +1729,38 @@ func _draw_hoard_bar() -> void:
 	else:
 		c.draw_rect(Rect2(Vector2(0, top), Vector2(w * frac, h)), s.accent)
 
-	## Allure thresholds — a colored tick with the unit's name centered above it.
+	## Allure thresholds — a coloured tick per Anti-Hero, and ONE name.
+	##
+	## Every tick draws, because each one is a real number on a real scale. Only the
+	## NEXT monster you haven't reached gets named, and it's named with its price:
+	## five labels packed into the left of a 10000-wide bar would overprint each
+	## other and the title, and the one with room to spare would be the furthest,
+	## dearest unit — advertising the thing you can't have for hours while saying
+	## nothing about the one you're twenty Gold short of.
+	var next_id := ""
+	var next_at := INF
+	for key in GameData.minions.keys():
+		var arrive: float = (GameData.minions[key] as MinionData).allure_arrive
+		if arrive > gold_after and arrive < next_at:
+			next_at = arrive
+			next_id = key
+
+	var title_right := f.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, 15).x + 10.0
 	for key in GameData.minions.keys():
 		var id: String = key
 		var d: MinionData = GameData.minions[id]
-		var x := w * d.allure_arrive
-		var present := after >= d.allure_arrive
-		var losing := (frac >= d.allure_desert) and (after < d.allure_desert)
+		## The tick sits at the GOLD AMOUNT that summons this one, so its place on
+		## the bar means the same thing the number above the bar does.
+		var x := w * EconomySystem.bar_position(d.allure_arrive)
+		var present := gold_after >= d.allure_arrive
+		var losing := (float(EconomySystem.hoard) >= d.allure_desert) \
+				and (gold_after < d.allure_desert)
 		var col := Color(1.0, 0.3, 0.25) if losing else (d.color if present else Color(0.45, 0.45, 0.45))
 		c.draw_line(Vector2(x, top - 5), Vector2(x, top + h + 5), col, 3.0)
-		var nm: String = d.display_name
+		if id != next_id:
+			continue
+		var nm := "%s  %d" % [d.display_name, int(d.allure_arrive)]
 		var nw := f.get_string_size(nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
-		c.draw_string(f, Vector2(x - nw * 0.5, 18), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
+		## Centred on its tick, then shoved clear of the title and the right edge.
+		var nx := clampf(x - nw * 0.5, title_right, maxf(w - nw, title_right))
+		c.draw_string(f, Vector2(nx, 18), nm, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, col)
